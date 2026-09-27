@@ -45,6 +45,15 @@ export function patchFoliatePaginator(code) {
   return code;
 }
 
+// Foliate's EPUB loader must read UTF-8 names that lack the ZIP UTF-8 flag,
+// otherwise non-ASCII chapter files are unreachable and only the TOC renders.
+export function patchFoliateZipLoader(code) {
+  const options = JSON.stringify(fileURLToPath(new URL("../src/epub-zip.js", import.meta.url)));
+  code = replaceRequired(code, "const reader = new ZipReader(new BlobReader(file))",
+    "const reader = new ZipReader(new BlobReader(file), EPUB_ZIP_OPTIONS)");
+  return `import { EPUB_ZIP_OPTIONS } from ${options}\n${code}`;
+}
+
 // Custom elements survive plugin unload. Scope them to this plugin and its
 // locked dependency build, so reloads reuse compatible classes and upgrades
 // cannot accidentally instantiate an older library's renderer.
@@ -60,6 +69,7 @@ export function foliateElements(root = process.cwd()) {
         build.onLoad({ filter: /node_modules[\\/]foliate-js[\\/](view|paginator|fixed-layout)\.js$/ }, async ({ path: file }) => {
           let code = await fs.promises.readFile(file, "utf8");
           if (path.basename(file) === "paginator.js") code = patchFoliatePaginator(code);
+          if (path.basename(file) === "view.js") code = patchFoliateZipLoader(code);
           code = code.replace(/(['"])foliate-(view|paginator|fxl)\1/g, (_, quote, type) => `${quote}${prefix}-${type}${quote}`);
           code = code.replace(/customElements\.define\(('([^']+)'|"([^"]+)"),/g,
             (_, literal) => `if (!customElements.get(${literal})) customElements.define(${literal},`);
