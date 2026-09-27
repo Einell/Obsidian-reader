@@ -1,5 +1,6 @@
 import { PDF_AI_CONTEXT_MAX_CHARS } from './pdf-page-mode.js';
 import { ZipReader, BlobReader } from 'foliate-js/vendor/zip.js';
+import { EPUB_ZIP_OPTIONS } from './epub-zip.js';
 
 export const EPUB_CONTEXT_LIMITS = Object.freeze({ fileBytes: 30 * 1024 * 1024, expandedBytes: 100 * 1024 * 1024, entryBytes: 8 * 1024 * 1024, entries: 10000, chapters: 2000, chars: PDF_AI_CONTEXT_MAX_CHARS });
 const fail = code => { throw Object.assign(new Error(code), { code }); };
@@ -22,7 +23,7 @@ function archivePath(base, href) {
 export async function extractEpubContext(bytes, { signal, DOMParser: Parser = window.DOMParser, limits = EPUB_CONTEXT_LIMITS, yieldTask = () => new Promise(resolve => window.setTimeout(resolve, 0)) } = {}) {
   check(signal);
   if (bytes.byteLength > limits.fileBytes) fail('epub-attachment-too-large');
-  const zip = new ZipReader(new BlobReader(new Blob([bytes])), { useWebWorkers: false });
+  const zip = new ZipReader(new BlobReader(new Blob([bytes])), { ...EPUB_ZIP_OPTIONS, useWebWorkers: false });
   try {
     const entries = [];
     let expanded = 0, actualExpandedBytes = 0;
