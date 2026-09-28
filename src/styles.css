@@ -1590,3 +1590,12 @@ button.qiaomu-reader-find-item.qiaomu-reader-toc-active { background: var(--back
   --text-on-accent: #181a1b;
   color: var(--text-normal);
 }
+
+/* Hide note metadata only while this plugin owns the active view; no Home dependency. */
+body:has(.workspace-leaf.mod-active > .workspace-leaf-content:is(
+  [data-type="qiaomu-reader"],
+  [data-type="qiaomu-reader-library"],
+  [data-type="qiaomu-book-reader-ai-chat"]
+)) .status-bar {
+  display: none;
+}
