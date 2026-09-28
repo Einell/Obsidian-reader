@@ -1,5 +1,6 @@
 import { selectionActionPreferences } from "./selection-preferences.js";
 import { watchQuietUi } from "./quiet-ui.js";
+import { watchReaderStatusBar } from "./status-bar.js";
 import { STARTER_BOOKS } from "./starter-book-data.js";
 import { createStarterLibraryInstaller, findStarterBook } from "./starter-library.js";
 import { isNonChineseSource } from "./ai-source-language.js";
@@ -1565,11 +1566,13 @@ const QiaomuBookReader = class extends Plugin {
   _watchQuietUiDocument(doc) {
     if (doc?.body && this._quietUiDocuments && !this._quietUiDocuments.has(doc)) {
       const stop = watchQuietUi(doc);
+      const stopStatusBar = watchReaderStatusBar(this.app.workspace, doc);
       const cleanup = () => {
         if (this._quietUiDocuments.get(doc) !== cleanup) return;
         this._quietUiDocuments.delete(doc);
         doc.defaultView?.removeEventListener("unload", cleanup);
         stop();
+        stopStatusBar();
       };
       this._quietUiDocuments.set(doc, cleanup);
       doc.defaultView?.addEventListener("unload", cleanup, { once: true });
