@@ -61,7 +61,7 @@ function setup() {
   };
   class Scope { constructor() { this.bindings = []; } register(mods, key, run) { this.bindings.push({ mods, key, run }); } }
   const translations = [];
-  const context = { selectionActionPreferences, TranslateModal: class { constructor(app, plugin, text, file) { translations.push({ text, file }); } open() {} }, window, Menu, Scope, aiSetupState: () => ({ ready: true, enabled: true }), paintAiSource() {}, qiaomuReaderTranslate: k => k, setIcon() {}, highlightBacklink,
+  const context = { selectionActionPreferences, openLookupCard: v => translations.push({ text: v._currentHl().text, file: v.file }), window, Menu, Scope, aiSetupState: () => ({ ready: true, enabled: true }), paintAiSource() {}, qiaomuReaderTranslate: k => k, setIcon() {}, highlightBacklink,
     docOf: el => el.ownerDocument, selOf: el => el.ownerDocument.getSelection(), readerIsPdf: () => false,
     qiaomuReaderRefreshHlPanel() {}, qiaomuReaderAutoFocus() {}, positionHlPopup() {},
     hlCommentQuoteBlock() {}, Notice: class {},

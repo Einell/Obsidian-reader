@@ -692,7 +692,7 @@ test("public README uses Qiaomu branding and links to preserved third-party noti
 test("AI prompt and context are Chinese-first", () => {
   const source = fs.readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
   const start = source.indexOf("function aiSystemChat");
-  const end = source.indexOf("const TranslateModal", start);
+  const end = source.indexOf("function lookupAiReady(", start);
   const aiSource = source.slice(start, end);
   assert.match(aiSource, /你是一名克制、准确的阅读助手/);
   assert.match(aiSource, /书名：《/);

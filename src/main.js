@@ -70,6 +70,9 @@ import { notifyHomeChanged } from "./qiaomu-home.js";
 import { createHomeProvider } from "./home.js";
 import { AI_ASSISTANT_ROUTES, readerSnapshot, shouldUseAgent } from "./agent-bridge.js";
 import { externalBookSearchUrls, gutenbergSearchUrl, gutenbergDetailUrl, parseGutenbergSearch, parseGutenbergEpub, validGutenbergEpub, safeBookFileName } from "./book-discovery.js";
+import { isLookupTerm, cleanLookupTerm, rangeContext, sentenceAround, buildTranslateMessages, buildLookupMessages, parseLookupAnswer, parseGoogleLookup, googleDetectedLanguage, sameLanguage, fallbackTarget, looksLikeLanguage, lookupEngine, lookupSessionKey, lookupCacheKey, createLookupCache } from "./lookup.js";
+import { defaultVocabularyPath, vocabularyDeckTag, vocabularyHeader, vocabularyKey, parseVocabularyCards, addToVocabulary, ankiFieldsFromCard } from "./vocabulary.js";
+import { ANKI_DEFAULT_URL, ANKI_DEFAULT_DECK, ANKI_ADDON_CODE, ankiNote, addAnkiNotes, ensureAnkiSetup } from "./anki.js";
 
 // Interface language is local to this plugin; dictionaries are bundled offline.
 let qiaomuReaderLanguage = "zh";
@@ -109,6 +112,12 @@ const DEFAULT_APPEARANCE = {
 };
 const DEFAULT_TRANSLATION = {
   translateEnabled: false, translateTo: "zh-CN",
+  // "google" is free and fast; "ai" uses the configured AI service with the
+  // sentence and book as context. AI silently falls back while not ready.
+  translateEngine: "google",
+  // Empty until the first word is collected; then pinned to the created note.
+  vocabularyFile: "",
+  ankiSync: false, ankiDeck: "", ankiUrl: "",
 };
 const DEFAULT_LIBRARY_UI = {
   bookNoteLinks: {}, locationMarks: [], bookNotePrompted: {}, coverFits: {},
@@ -187,8 +196,11 @@ const DEFAULT = Object.assign(
 
 const TRANSLATION_LANGUAGE_CHOICES = Object.freeze([
   ["zh-CN", "simplified-chinese"],
-  ["ru", "russian"],
+  ["zh-TW", "traditional-chinese"],
   ["en", "english"],
+  ["ja", "japanese"],
+  ["ko", "korean"],
+  ["ru", "russian"],
   ["de", "german"],
   ["fr", "french"],
   ["es", "spanish"],
@@ -1731,6 +1743,18 @@ const QiaomuBookReader = class extends Plugin {
           return true;
         },
       },
+      {
+        id: "open-vocabulary", name: qiaomuReaderTranslate("open-vocabulary"),
+        callback: () => void openVocabulary(this),
+      },
+      {
+        id: "sync-vocabulary-to-anki", name: qiaomuReaderTranslate("sync-vocabulary-to-anki"),
+        checkCallback: (probe) => {
+          if (!this.settings.ankiSync) return false;
+          if (!probe) void syncVocabularyToAnki(this);
+          return true;
+        },
+      },
     ];
     for (const command of laterCommands) this.addCommand(command);
   }
@@ -1749,6 +1773,10 @@ const QiaomuBookReader = class extends Plugin {
           this.settings.bookNoteLinks[book] = file.path + target.slice(oldPath.length);
           changed = true;
         }
+      }
+      if (this.settings.vocabularyFile && this.settings.vocabularyFile === oldPath) {
+        this.settings.vocabularyFile = file.path;
+        changed = true;
       }
       if (changed) void this._saveLocalData();
     }));
@@ -3341,27 +3369,51 @@ function translateHttpError(message, reason, status) {
   return err;
 }
 
-async function requestTranslatedSegment(chunk, target) {
-  const res = await requestUrl({ url: translateRequestUrl(chunk, target), method: "GET", throw: false });
+async function requestGooglePayload(chunk, target, dictionary = false) {
+  const url = translateRequestUrl(chunk, target) + (dictionary ? "&dt=bd" : "");
+  const res = await requestUrl({ url, method: "GET", throw: false });
   if ([429, 503].includes(res.status)) throw translateHttpError("translate rate-limited", "limit");
   if (res.status < 200 || 300 <= res.status) {
     throw translateHttpError(`translate http ${res.status}`, "http", res.status);
   }
   const payload = res.json;
   if (!Array.isArray(payload) || !Array.isArray(payload[0])) throw new Error("unexpected translate response");
+  return payload;
+}
+function googleSegmentText(payload) {
   return payload[0].map((part) => (part && part[0]) || "").join("");
 }
-
-async function translateText(text, to = "ru") {
-  const raw = text || "";
-  const q = raw.replace(/\s+/g, " ").trim();
-  if (!q.length) return "";
-  let translated = "";
-  for (const chunk of splitTranslateChunks(q, TRANSLATE_CHUNK_LIMIT)) {
-    translated += await requestTranslatedSegment(chunk, to);
-  }
-  return translated.trim();
+async function requestTranslatedSegment(chunk, target) {
+  return googleSegmentText(await requestGooglePayload(chunk, target));
 }
+// Source language is always detected. Text already in the target language is
+// sent again to the fallback language instead of coming back unchanged.
+async function googleTranslateDetailed(text, target) {
+  const q = String(text || "").replace(/\s+/g, " ").trim();
+  if (!q) return { text: "", target };
+  const chunks = splitTranslateChunks(q, TRANSLATE_CHUNK_LIMIT);
+  let used = target;
+  let first = await requestGooglePayload(chunks[0], used);
+  if (sameLanguage(googleDetectedLanguage(first), target)) {
+    used = fallbackTarget(target);
+    first = await requestGooglePayload(chunks[0], used);
+  }
+  let translated = googleSegmentText(first);
+  for (const chunk of chunks.slice(1)) translated += await requestTranslatedSegment(chunk, used);
+  return { text: translated.trim(), target: used };
+}
+async function googleLookupTerm(term, target) {
+  let used = target;
+  let payload = await requestGooglePayload(term, used, true);
+  if (sameLanguage(googleDetectedLanguage(payload), target)) {
+    used = fallbackTarget(target);
+    payload = await requestGooglePayload(term, used, true);
+  }
+  const card = parseGoogleLookup(payload);
+  if (!card) throw translateHttpError("empty lookup", "empty");
+  return { card, target: used };
+}
+
 function aiSecretValue(plugin, providerId) {
   const settings = plugin.settings;
   const secretId = settings.aiSecrets?.[providerId]
@@ -4346,14 +4398,17 @@ async function aiExplainStream(cfg, messages, options) {
   return answer.trim();
 }
 async function aiExplain(text, plugin, turns, book, options = {}) {
-  const settings = plugin.settings;
+  return aiComplete(plugin, aiMessages(text, plugin.settings, turns, book), options);
+}
+// One request to the configured service with caller-built messages. Chat,
+// translation and word lookup share transport, streaming and error reasons.
+async function aiComplete(plugin, messages, options = {}) {
   const cfg = aiConfig(plugin);
   if (!cfg.provider || (cfg.transport !== "cli" && (!cfg.base || !cfg.model))) {
     const err = new Error("AI is not configured");
     err.qiaomuReaderReason = "notconfigured";
     throw err;
   }
-  const messages = aiMessages(text, settings, turns, book);
   if (cfg.transport === "cli") {
     if (!Platform.isDesktopApp) {
       const err = new Error("CLI AI is desktop-only");
@@ -4510,109 +4565,437 @@ function saveTranslationNote(modal, destination, translation) {
   return pending;
 }
 
-const TranslateModal = class extends Modal {
-  constructor(app, plugin, text, bookFile, source = {}) {
-    super(app);
-    this.plugin = plugin;
-    this.text = text;
-    this.bookFile = bookFile;
-    this.source = { ...source, text };
-    this.noteTarget = currentTranslationNote(plugin);
-    this.savedTargets = new Map();
+// Translation and word lookup share one card drawn inside the selection popup,
+// so it is positioned, docked on mobile and dismissed exactly like the toolbar.
+function lookupAiReady(plugin) {
+  const state = aiSetupState(plugin);
+  return state.ready && state.enabled;
+}
+function lookupLanguageLabel(code) {
+  const choice = TRANSLATION_LANGUAGE_CHOICES.find(([value]) => value === code);
+  return choice ? qiaomuReaderTranslate(choice[1]) : code;
+}
+function lookupFailureText(error, engine) {
+  const why = error && error.qiaomuReaderReason;
+  if (engine === "ai") return aiConnectionErrorMessage(error);
+  if (why === "limit") return qiaomuReaderTranslate("google-is-rate-limiting-translations-wait-a-minute-and-try-again");
+  if (why === "http") return qiaomuReaderTranslate("the-translator-answered-with-error-0-your-connection-is-fine-try", error.qiaomuReaderStatus);
+  if (why === "empty") return qiaomuReaderTranslate("the-translator-returned-nothing");
+  return qiaomuReaderTranslate("could-not-reach-the-translator-it-looks-like-there-is-no-interne");
+}
+async function aiTranslateText(plugin, { text, context, book, target, signal, onDelta }) {
+  // A passage already in the target language goes to the fallback language;
+  // the prompt repeats the rule for scripts this cheap check cannot tell apart.
+  const used = looksLikeLanguage(text, target) ? fallbackTarget(target) : target;
+  const answer = await aiComplete(plugin, buildTranslateMessages({ text, context, book, target: used }), {
+    signal, onDelta, sessionKey: lookupSessionKey("text", plugin._lookupTextTurns = (plugin._lookupTextTurns || 0) + 1),
+  });
+  return { text: answer.trim(), target: used };
+}
+async function aiLookupTerm(plugin, { term, sentence, book, target, signal }) {
+  const used = looksLikeLanguage(term, target) ? fallbackTarget(target) : target;
+  const answer = await aiComplete(plugin, buildLookupMessages({ term, sentence, book, target: used }), {
+    signal, sessionKey: lookupSessionKey("word", plugin._lookupWordTurns = (plugin._lookupWordTurns || 0) + 1),
+  });
+  const card = parseLookupAnswer(answer)
+    || { lemma: "", phonetic: "", meaning: answer.trim().slice(0, 600), senses: [], note: "", example: "", exampleTranslation: "" };
+  return { card, target: used };
+}
+function lookupCardMarkdown(state, result) {
+  if (state.word && result.card) {
+    const c = result.card;
+    const head = `**${c.lemma || state.term}**${c.phonetic ? ` ${c.phonetic}` : ""}`;
+    const lines = [c.meaning ? `${head} — ${c.meaning}` : head];
+    for (const sense of c.senses) lines.push(`- ${sense.pos ? `*${sense.pos}* ` : ""}${sense.def}`);
+    if (c.note) lines.push(c.note);
+    if (c.example) lines.push(`> ${c.example}${c.exampleTranslation ? `\n> ${c.exampleTranslation}` : ""}`);
+    return lines.join("\n");
   }
-  async onOpen() {
-    const { contentEl: root } = this;
-    root.empty();
-    root.createEl("h3", { text: qiaomuReaderTranslate("translation") });
-    this._textBox(root, qiaomuReaderTranslate("original")).setText(this.text);
-    const outEl = this._textBox(root, qiaomuReaderTranslate("translation"));
-    outEl.setText(qiaomuReaderTranslate("translating"));
-    let tr = "";
-    try {
-      tr = await translateText(this.text, this.plugin.settings.translateTo || "zh-CN");
-      outEl.setText(tr || qiaomuReaderTranslate("the-translator-returned-nothing"));
-    } catch (e) {
-      console.error("Qiaomu Reader: translate failed", e);
-      outEl.setText(this._failureText(e));
-      return;
+  return result.text || "";
+}
+function closeLookupCard(view) {
+  const pop = view && view.hlPopup;
+  if (!pop) return;
+  view._lookupOpen = false;
+  pop.removeClass("qiaomu-reader-hl-popup-lookup");
+  const card = pop.querySelector(".qiaomu-reader-lookup");
+  if (card) { card.lookupState?.controller?.abort(); card.remove(); }
+}
+function openLookupCard(view) {
+  const plugin = view.plugin, settings = plugin.settings;
+  const cur = view._currentHl(), file = view.file, pop = view.hlPopup;
+  if (!cur || !file || !pop || !settings.translateEnabled) return;
+  const live = view._selectionDoc?.getSelection() || selOf(view.areaEl);
+  const range = live?.rangeCount && !live.isCollapsed ? live.getRangeAt(0) : null;
+  const pre = cur.pre || "";
+  const context = (range && rangeContext(range))
+    || sentenceAround(`${pre}${cur.text}${cur.post || ""}`, pre.length, pre.length + cur.text.length);
+  closeSelectionColorDropdown(view);
+  closeInlineHighlightComment(view);
+  closeLookupCard(view);
+  const word = isLookupTerm(cur.text);
+  const state = {
+    view, plugin, app: view.app, bookFile: file, text: cur.text, source: { ...cur },
+    term: cleanLookupTerm(cur.text), context, word,
+    book: bookNoteLinkFor(plugin, file) || file.basename,
+    target: view._lookupTarget || settings.translateTo || "zh-CN",
+    engine: lookupEngine(settings, lookupAiReady(plugin)),
+    noteTarget: currentTranslationNote(plugin), savedTargets: new Map(), controller: null,
+  };
+  view._lookupOpen = true;
+  pop.addClass("qiaomu-reader-hl-popup-lookup");
+  const card = pop.createDiv({ cls: "qiaomu-reader-lookup", attr: { role: "dialog", "aria-label": qiaomuReaderTranslate(word ? "lookup-word" : "translation") } });
+  card.lookupState = state;
+  card.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); view._hideHlPopup(); }
+  });
+  void runLookup(card, state);
+}
+function placeLookupCard(view) {
+  if (view._hlPopupRect) positionHlPopup(view, view._hlPopupRect, 340, 160);
+}
+async function runLookup(card, state) {
+  const { view, plugin } = state;
+  state.controller?.abort();
+  const controller = new AbortController();
+  state.controller = controller;
+  state.result = null;
+  card.empty();
+  const head = card.createDiv("qiaomu-reader-lookup-head");
+  const title = head.createDiv("qiaomu-reader-lookup-title");
+  if (state.word) title.createSpan({ cls: "qiaomu-reader-lookup-term", text: state.term });
+  else title.createSpan({ cls: "qiaomu-reader-lookup-kind", text: qiaomuReaderTranslate("translation") });
+  const targetBtn = head.createEl("button", {
+    cls: "qiaomu-reader-lookup-target",
+    attr: { type: "button", "aria-haspopup": "menu", "aria-label": qiaomuReaderTranslate("translate-into-0", lookupLanguageLabel(state.target)) },
+  });
+  targetBtn.createSpan({ text: `→ ${lookupLanguageLabel(state.target)}` });
+  setIcon(targetBtn.createSpan({ cls: "qiaomu-reader-lookup-chevron" }), "chevron-down");
+  targetBtn.addEventListener("click", () => {
+    const menu = new Menu().setUseNativeMenu(false);
+    for (const [code, label] of TRANSLATION_LANGUAGE_CHOICES) {
+      menu.addItem((item) => item.setTitle(qiaomuReaderTranslate(label)).setChecked(code === state.target).onClick(() => {
+        if (code === state.target) return;
+        // A temporary choice lasts for this reader session; the default in
+        // settings is left alone.
+        state.target = code; view._lookupTarget = code;
+        void runLookup(card, state);
+      }));
     }
-    this._footerActions(root, tr);
+    const rect = targetBtn.getBoundingClientRect();
+    menu.showAtPosition({ x: rect.left, y: rect.bottom }, docOf(targetBtn));
+  });
+  const body = card.createDiv({ cls: "qiaomu-reader-lookup-body", attr: { "aria-live": "polite" } });
+  const status = body.createDiv({ cls: "qiaomu-reader-lookup-status", text: qiaomuReaderTranslate(state.word ? "looking-up" : "translating") });
+  const cfg = aiConfig(plugin);
+  const slow = state.engine === "ai" && cfg.transport === "cli"
+    ? window.setTimeout(() => { if (status.isConnected) status.setText(qiaomuReaderTranslate("lk-cli-slow")); }, 2500)
+    : null;
+  window.requestAnimationFrame(() => placeLookupCard(view));
+  const cache = plugin._lookupCache ||= createLookupCache(200);
+  const key = lookupCacheKey(state.word ? "word" : "text", state.engine, state.target, state.word ? state.term : state.text, state.context);
+  let result = cache.get(key);
+  try {
+    if (!result) {
+      if (state.word) {
+        result = state.engine === "ai"
+          ? await aiLookupTerm(plugin, { term: state.term, sentence: state.context, book: state.book, target: state.target, signal: controller.signal })
+          : await googleLookupTerm(state.term, state.target);
+      } else if (state.engine === "ai") {
+        let out = null, frame = 0;
+        result = await aiTranslateText(plugin, {
+          text: state.text, context: state.context, book: state.book, target: state.target, signal: controller.signal,
+          onDelta: (delta) => {
+            if (controller.signal.aborted || !card.isConnected) return;
+            if (!out) { status.remove(); out = body.createDiv("qiaomu-reader-lookup-text"); }
+            out.setText(delta.answer || "");
+            if (!frame) frame = window.requestAnimationFrame(() => { frame = 0; placeLookupCard(view); });
+          },
+        });
+      } else {
+        result = await googleTranslateDetailed(state.text, state.target);
+      }
+      cache.set(key, result);
+    }
+  } catch (error) {
+    window.clearTimeout(slow);
+    if (controller.signal.aborted || !card.isConnected) return;
+    console.error("Qiaomu Reader: lookup failed", error);
+    body.empty();
+    body.createDiv({ cls: "qiaomu-reader-lookup-error", text: lookupFailureText(error, state.engine), attr: { role: "alert" } });
+    const actions = card.createDiv("qiaomu-reader-lookup-actions");
+    actions.createEl("button", { text: qiaomuReaderTranslate("try-again"), attr: { type: "button" } })
+      .addEventListener("click", () => void runLookup(card, state));
+    if (state.engine === "ai") {
+      actions.createEl("button", { text: qiaomuReaderTranslate("use-google-translate"), attr: { type: "button" } })
+        .addEventListener("click", () => { state.engine = "google"; void runLookup(card, state); });
+    }
+    placeLookupCard(view);
+    return;
   }
-  _textBox(root, label) {
-    const wrap = root.createDiv();
-    wrap.addClass("qiaomu-reader-tr-box");
-    const head = wrap.createDiv();
-    head.setText(label);
-    head.addClass("qiaomu-reader-tr-label");
-    const body = wrap.createDiv();
-    for (const [prop, value] of [
-      ["max-height", "180px"],
-      ["overflow", "auto"],
-      ["padding", "10px 12px"],
-      ["border", "1px solid var(--background-modifier-border)"],
-      ["border-radius", "8px"],
-      ["background", "var(--background-secondary)"],
-      ["line-height", "1.55"],
-      ["white-space", "pre-wrap"],
-      ["user-select", "text"],
-    ]) body.style.setProperty(prop, value);
-    return body;
+  window.clearTimeout(slow);
+  if (controller.signal.aborted || !card.isConnected) return;
+  state.result = result;
+  body.empty();
+  if (state.word && result.card?.phonetic) title.createSpan({ cls: "qiaomu-reader-lookup-phonetic", text: result.card.phonetic });
+  if (state.word) renderLookupWord(body, state, result.card);
+  else body.createDiv({ cls: "qiaomu-reader-lookup-text", text: result.text || qiaomuReaderTranslate("the-translator-returned-nothing") });
+  if (result.target !== state.target) {
+    body.createDiv({ cls: "qiaomu-reader-lookup-hint", text: qiaomuReaderTranslate("lk-fallback", lookupLanguageLabel(state.target), lookupLanguageLabel(result.target)) });
   }
-  _failureText(error) {
-    const why = error && error.qiaomuReaderReason;
-    if (why === "limit") return qiaomuReaderTranslate("google-is-rate-limiting-translations-wait-a-minute-and-try-again");
-    if (why === "http") return qiaomuReaderTranslate("the-translator-answered-with-error-0-your-connection-is-fine-try", error.qiaomuReaderStatus);
-    return qiaomuReaderTranslate("could-not-reach-the-translator-it-looks-like-there-is-no-interne");
+  renderLookupActions(card, state);
+  window.requestAnimationFrame(() => placeLookupCard(view));
+}
+function renderLookupWord(body, state, c) {
+  if (c.lemma && c.lemma.toLowerCase() !== state.term.toLowerCase()) {
+    const line = body.createDiv("qiaomu-reader-lookup-lemma");
+    line.appendText(qiaomuReaderTranslate("base-form") + " ");
+    line.createSpan({ cls: "qiaomu-reader-lookup-lemma-word", text: c.lemma });
   }
-  _footerActions(root, tr) {
-    if (!tr || this._closed) return;
-    const foot = root.createDiv("qiaomu-reader-translation-actions");
-    const copy = foot.createEl("button", { text: qiaomuReaderTranslate("copy-translation") });
-    copy.addEventListener("click", async () => {
-      const copied = await copyToClipboard(tr);
-      new Notice(qiaomuReaderTranslate(copied ? "copied" : "could-not-copy"));
+  if (c.meaning) body.createDiv({ cls: "qiaomu-reader-lookup-meaning", text: c.meaning });
+  // Google often repeats the headline translation as its only sense.
+  const senses = c.senses.filter((sense) => sense.def !== c.meaning);
+  if (senses.length) {
+    const list = body.createEl("ul", "qiaomu-reader-lookup-senses");
+    for (const sense of senses) {
+      const li = list.createEl("li");
+      if (sense.pos) li.createSpan({ cls: "qiaomu-reader-lookup-pos", text: sense.pos });
+      li.createSpan({ text: sense.def });
+    }
+  }
+  if (c.note) body.createDiv({ cls: "qiaomu-reader-lookup-note", text: c.note });
+  if (c.example) {
+    const ex = body.createDiv("qiaomu-reader-lookup-example");
+    ex.createDiv({ text: c.example });
+    if (c.exampleTranslation) ex.createDiv({ cls: "qiaomu-reader-lookup-example-tr", text: c.exampleTranslation });
+  }
+}
+function renderLookupActions(card, state) {
+  const { plugin } = state;
+  const foot = card.createDiv("qiaomu-reader-lookup-actions");
+  // The engine that answered stays visible; the other one is one click away
+  // only when it can actually answer.
+  const other = state.engine === "ai" ? "google" : lookupAiReady(plugin) ? "ai" : "";
+  const engine = foot.createDiv("qiaomu-reader-lookup-engine");
+  const provider = aiConfig(plugin).provider;
+  engine.createSpan({ text: state.engine === "ai" && provider
+    ? qiaomuReaderTranslate(provider.label) : qiaomuReaderTranslate(state.engine === "ai" ? "engine-ai" : "engine-google") });
+  if (other) {
+    engine.createEl("button", {
+      cls: "qiaomu-reader-lookup-switch",
+      text: qiaomuReaderTranslate(other === "ai" ? (state.word ? "explain-with-ai" : "translate-with-ai") : "use-google-translate"),
+      attr: { type: "button" },
+    }).addEventListener("click", () => { state.engine = other; void runLookup(card, state); });
+  }
+  if (state.word && state.result?.card) renderVocabularyButton(foot, state, state.result.card);
+  const markdown = lookupCardMarkdown(state, state.result);
+  const copy = foot.createEl("button", { cls: "qiaomu-reader-lookup-icon", attr: { type: "button", "aria-label": qiaomuReaderTranslate("copy") } });
+  setIcon(copy, "copy");
+  copy.addEventListener("click", async () => {
+    const copied = await copyToClipboard(markdown);
+    new Notice(qiaomuReaderTranslate(copied ? "copied" : "could-not-copy"));
+  });
+  const save = foot.createEl("button", { cls: "qiaomu-reader-lookup-icon", attr: { type: "button", "aria-label": qiaomuReaderTranslate("translation-save-to"), "aria-haspopup": "menu" } });
+  setIcon(save, "file-plus");
+  save.addEventListener("click", () => {
+    const menu = new Menu().setUseNativeMenu(false);
+    const targets = [
+      ["book", "book-open", qiaomuReaderTranslate("translation-save-book"), true],
+      ["current", "file-text", state.noteTarget ? qiaomuReaderTranslate("translation-current-note", state.noteTarget.file.basename) : qiaomuReaderTranslate("translation-no-current-note"), !!(state.noteTarget && currentTranslationNote(plugin, state.noteTarget))],
+      ["new", "file-plus", qiaomuReaderTranslate("create-new-note"), true],
+      ["daily", "calendar", qiaomuReaderTranslate("translation-daily-note"), !!dailyNoteProvider(state.app)],
+    ];
+    for (const [id, icon, label, available] of targets) {
+      menu.addItem((item) => item.setTitle(label).setIcon(icon).setDisabled(!available).onClick(() => void saveLookupResult(card, state, id, markdown)));
+    }
+    const rect = save.getBoundingClientRect();
+    menu.showAtPosition({ x: rect.left, y: rect.bottom }, docOf(save));
+  });
+}
+// Vocabulary book: one shared note of review cards, created on first use and
+// pinned in settings so later folder changes never split it in two.
+function vocabularyZh() {
+  return qiaomuReaderLanguage === "zh";
+}
+function vocabularyDeckName() {
+  return vocabularyDeckTag(vocabularyZh());
+}
+function vocabularyPath(plugin) {
+  const saved = qiaomuReaderPath(plugin.settings.vocabularyFile);
+  return saved || qiaomuReaderPath(defaultVocabularyPath(notesFolderPath(plugin.app), vocabularyZh()));
+}
+function vocabularyPathError(path) {
+  const err = new Error("Invalid vocabulary path");
+  err.qiaomuReaderReason = "vocabpath";
+  err.qiaomuReaderPath = path;
+  return err;
+}
+async function ensureVocabularyFile(plugin) {
+  const { app } = plugin;
+  const path = vocabularyPath(plugin);
+  if (!path.toLowerCase().endsWith(".md")) throw vocabularyPathError(path);
+  let file = app.vault.getAbstractFileByPath(path);
+  if (file && !(file instanceof TFile)) throw vocabularyPathError(path);
+  if (!file) {
+    const folder = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+    try { await ensureNoteFolder(app.vault, folder, (entry) => entry instanceof TFolder); }
+    catch { throw vocabularyPathError(path); }
+    try { file = await app.vault.create(path, vocabularyHeader(vocabularyZh())); }
+    catch (error) { file = app.vault.getAbstractFileByPath(path); if (!(file instanceof TFile)) throw error; }
+  }
+  if (plugin.settings.vocabularyFile !== path) {
+    plugin.settings.vocabularyFile = path;
+    await plugin.saveAll();
+  }
+  return file;
+}
+function vocabularyEntry(state, card) {
+  const vault = state.app.vault.getName();
+  return {
+    term: state.term,
+    lemma: card?.lemma || "",
+    phonetic: card?.phonetic || "",
+    meaning: card?.meaning || "",
+    senses: (card?.senses || []).filter((sense) => sense.def !== card.meaning),
+    context: state.context,
+    book: state.bookFile.basename,
+    backlink: highlightBacklink(vault, state.bookFile.path, { ...state.source, id: undefined }),
+  };
+}
+function addWordToVocabulary(plugin, entry) {
+  const operation = async () => {
+    const file = await ensureVocabularyFile(plugin);
+    let outcome = null;
+    await plugin.app.vault.process(file, (text) => {
+      outcome = addToVocabulary(text, entry, vocabularyHeader(vocabularyZh()));
+      return outcome.text;
     });
-    const group = foot.createDiv("qiaomu-reader-translation-save");
-    const save = group.createEl("button", { cls: "mod-cta", text: qiaomuReaderTranslate("translation-save-book") });
-    save.addEventListener("click", () => void this._saveTranslation("book", tr));
-    const more = group.createEl("button", { attr: { "aria-label": qiaomuReaderTranslate("translation-save-to"), "aria-haspopup": "menu" } });
-    setIcon(more, "chevron-down");
-    more.addEventListener("click", () => {
-      const menu = new Menu().setUseNativeMenu(false);
-      const targets = [
-        ["book", "book-open", qiaomuReaderTranslate("translation-save-book"), true],
-        ["current", "file-text", this.noteTarget ? qiaomuReaderTranslate("translation-current-note", this.noteTarget.file.basename) : qiaomuReaderTranslate("translation-no-current-note"), !!(this.noteTarget && currentTranslationNote(this.plugin, this.noteTarget))],
-        ["new", "file-plus", qiaomuReaderTranslate("create-new-note"), true],
-        ["daily", "calendar", qiaomuReaderTranslate("translation-daily-note"), !!dailyNoteProvider(this.app)],
-      ];
-      for (const [id, icon, label, available] of targets) menu.addItem(item => item.setTitle(label).setIcon(icon).setDisabled(!available || this._saving).onClick(() => void this._saveTranslation(id, tr)));
-      if (!dailyNoteProvider(this.app)) menu.addItem(item => item.setTitle(qiaomuReaderTranslate("translation-enable-daily")).setIcon("settings").onClick(() => { this.app.setting.open(); this.app.setting.openTabById("core-plugins"); }));
-      const rect = more.getBoundingClientRect();
-      menu.showAtPosition({ x: rect.left, y: rect.bottom });
-    });
-    this.saveButtons = [save, more];
-    this.saveStatus = root.createDiv({ cls: "qiaomu-reader-translation-status", attr: { role: "status" } });
+    return { ...outcome, file };
+  };
+  // Serialize appends so two quick clicks cannot both add the same word.
+  const pending = (plugin._vocabularyChain || Promise.resolve()).catch(() => {}).then(operation);
+  plugin._vocabularyChain = pending;
+  return pending;
+}
+async function vocabularyHasWord(plugin, term, lemma = "") {
+  const file = plugin.app.vault.getAbstractFileByPath(vocabularyPath(plugin));
+  if (!(file instanceof TFile)) return false;
+  const keys = new Set([vocabularyKey(term), vocabularyKey(lemma)].filter(Boolean));
+  const { cards } = parseVocabularyCards(await plugin.app.vault.cachedRead(file));
+  return cards.some((card) => keys.has(card.key));
+}
+async function openVocabulary(plugin) {
+  try {
+    const file = await ensureVocabularyFile(plugin);
+    await plugin.app.workspace.getLeaf(false).openFile(file);
+  } catch (error) {
+    console.error("Qiaomu Reader: could not open the vocabulary", error);
+    new Notice(vocabularyErrorMessage(error));
   }
-  async _saveTranslation(destination, translation) {
-    if (this._saving) return;
-    this._saving = true;
-    this.saveButtons?.forEach(button => button.disabled = true);
-    try {
-      const file = await saveTranslationNote(this, destination, translation);
-      if (!file) return;
-      this.savedTargets.set(destination, file);
-      if (this._closed) return;
-      this.saveStatus.empty();
-      this.saveStatus.createSpan({ text: qiaomuReaderTranslate("translation-saved", file.basename) });
-      this.saveStatus.createEl("button", { text: qiaomuReaderTranslate("translation-open-note") }).addEventListener("click", () => void openNoteBesideBook(this.app, this.plugin, file));
-    } catch (error) {
-      console.error("Qiaomu Reader: translation save failed", error);
-      if (!this._closed) { this.saveStatus.setAttribute("role", "alert"); this.saveStatus.setText(qiaomuReaderTranslate("translation-save-failed")); }
-    } finally { this._saving = false; this.saveButtons?.forEach(button => button.disabled = false); }
-  }
-  onClose() { this._closed = true; this.contentEl.empty(); }
+}
+function vocabularyErrorMessage(error) {
+  if (error?.qiaomuReaderReason === "vocabpath") return qiaomuReaderTranslate("vb-bad-path", error.qiaomuReaderPath);
+  return qiaomuReaderTranslate("vb-save-failed");
+}
 
-};
+// Anki goes through AnkiConnect on the same computer (or AnkiConnect Android).
+function ankiPost(url, body) {
+  return requestUrl({ url, method: "POST", contentType: "application/json", body: JSON.stringify(body), throw: false })
+    .then((res) => {
+      let json = null;
+      try { json = res.json; } catch { json = null; }
+      return { status: res.status, json };
+    });
+}
+function ankiTarget(plugin) {
+  return {
+    url: String(plugin.settings.ankiUrl || "").trim() || ANKI_DEFAULT_URL,
+    deck: String(plugin.settings.ankiDeck || "").trim() || ANKI_DEFAULT_DECK,
+  };
+}
+function ankiErrorMessage(error) {
+  const why = error?.qiaomuReaderReason;
+  if (why === "ankiforbidden") return qiaomuReaderTranslate("anki-forbidden");
+  if (why === "ankiapi") return qiaomuReaderTranslate("anki-returned-an-error-0", error.message);
+  return qiaomuReaderTranslate("anki-unreachable", ANKI_ADDON_CODE);
+}
+async function ankiNotesFromVocabulary(plugin, file, onlyKeys = null) {
+  const { deck } = ankiTarget(plugin);
+  const { cards } = parseVocabularyCards(await plugin.app.vault.read(file));
+  return cards
+    .filter((card) => !onlyKeys || onlyKeys.has(card.key))
+    .map((card) => ankiNote(deck, ankiFieldsFromCard(card)));
+}
+async function pushWordToAnki(plugin, file, word) {
+  const { url, deck } = ankiTarget(plugin);
+  const notes = await ankiNotesFromVocabulary(plugin, file, new Set([vocabularyKey(word)]));
+  return addAnkiNotes(ankiPost, url, deck, notes);
+}
+async function syncVocabularyToAnki(plugin) {
+  try {
+    const file = await ensureVocabularyFile(plugin);
+    const { url, deck } = ankiTarget(plugin);
+    const result = await addAnkiNotes(ankiPost, url, deck, await ankiNotesFromVocabulary(plugin, file));
+    new Notice(qiaomuReaderTranslate("anki-sync-result", result.added, result.skipped));
+    return result;
+  } catch (error) {
+    console.error("Qiaomu Reader: Anki sync failed", error);
+    new Notice(error?.qiaomuReaderReason?.startsWith("anki") ? ankiErrorMessage(error) : vocabularyErrorMessage(error), 10000);
+    return null;
+  }
+}
+function renderVocabularyButton(foot, state, card) {
+  const { plugin } = state;
+  const button = foot.createEl("button", { cls: "qiaomu-reader-lookup-add", attr: { type: "button" } });
+  setIcon(button.createSpan({ cls: "qiaomu-reader-lookup-add-icon" }), "plus");
+  const label = button.createSpan({ text: qiaomuReaderTranslate("add-to-vocabulary") });
+  let savedFile = null;
+  const markSaved = (text) => {
+    button.addClass("is-saved");
+    button.empty();
+    setIcon(button.createSpan({ cls: "qiaomu-reader-lookup-add-icon" }), "check");
+    button.createSpan({ text });
+  };
+  void vocabularyHasWord(plugin, state.term, card?.lemma).then((known) => {
+    if (known && button.isConnected && !savedFile) markSaved(qiaomuReaderTranslate("in-vocabulary"));
+  }).catch(() => {});
+  button.addEventListener("click", async () => {
+    if (savedFile) { void openNoteBesideBook(plugin.app, plugin, savedFile); return; }
+    if (button.disabled) return;
+    button.disabled = true;
+    try {
+      const result = await addWordToVocabulary(plugin, vocabularyEntry(state, card));
+      savedFile = result.file;
+      if (!button.isConnected) return;
+      markSaved(qiaomuReaderTranslate(result.status === "added" ? "added-to-vocabulary"
+        : result.status === "context" ? "vb-example-added" : "in-vocabulary"));
+      button.setAttr("aria-label", qiaomuReaderTranslate("open-vocabulary"));
+      if (result.status === "added" && plugin.settings.ankiSync) {
+        pushWordToAnki(plugin, result.file, result.word).catch((error) => {
+          console.error("Qiaomu Reader: Anki push failed", error);
+          new Notice(ankiErrorMessage(error), 10000);
+        });
+      }
+    } catch (error) {
+      console.error("Qiaomu Reader: vocabulary save failed", error);
+      new Notice(vocabularyErrorMessage(error), 8000);
+      if (label.isConnected) label.setText(qiaomuReaderTranslate("add-to-vocabulary"));
+    } finally { button.disabled = false; }
+  });
+}
+async function saveLookupResult(card, state, destination, markdown) {
+  if (state.saving) return;
+  state.saving = true;
+  try {
+    const file = await saveTranslationNote(state, destination, markdown);
+    if (!file) return;
+    state.savedTargets.set(destination, file);
+    new Notice(qiaomuReaderTranslate("translation-saved", file.basename));
+  } catch (error) {
+    console.error("Qiaomu Reader: lookup save failed", error);
+    new Notice(qiaomuReaderTranslate("translation-save-failed"));
+  } finally { state.saving = false; }
+}
 // The book does not lay out instantly; the veil (qiaomu-reader-booting) hides the half-ready page
 function qiaomuReaderShowVeil(view, text) {
   const host = view && view.areaEl && view.areaEl.parentElement;
@@ -5001,7 +5384,7 @@ function openEngineHighlightPopup(view, hit) {
   view._showHlPopup(engineSelectionRect(doc, hit.range));
 }
 function openReaderSelectionContext(view, event, doc, index) {
-  if (view._commentEditing || view.pdfPanMode) return;
+  if (view._commentEditing || view._lookupOpen || view.pdfPanMode) return;
   const sel = doc.getSelection();
   if (!sel || sel.isCollapsed || !sel.toString().trim()) return;
   view._editHlId = null;
@@ -5124,10 +5507,8 @@ function selectionActions(view) {
     comment: ["qiaomu-reader-hl-comment-btn", "message-square", "annotate-action", () => openInlineHighlightComment(view)],
     ai: ["qiaomu-reader-hl-ai", "sparkles", "ask-ai-action", () => openAiSelectionChat(view)],
     translate: ["qiaomu-reader-hl-translate", "languages", "translate", () => {
-      const cur = view._currentHl(), file = view.file;
-      if (!cur || !file || !view.plugin.settings.translateEnabled) return;
-      clearReaderSelection(view); view._hideHlPopup();
-      new TranslateModal(view.app, view.plugin, cur.text, file, { ...cur }).open();
+      if (!view._currentHl() || !view.file || !view.plugin.settings.translateEnabled) return;
+      openLookupCard(view);
     }],
     copy: ["qiaomu-reader-hl-copy", "copy", "copy", () => void copySelectionText(view)],
   };
@@ -10172,7 +10553,7 @@ const ReaderView = class extends ItemView {
   // mount hook is watching; anchor them by CFI and raise the same popup.
   _engineSelectionCheck({ doc, index }) {
     if (!this.engine || !this.file || this.file.extension === "pdf") return;
-    if (this._selectionMenuOpen || this._editHlId || this._commentEditing || this._selectionDragging || this.pdfPanMode) return;
+    if (this._selectionMenuOpen || this._editHlId || this._commentEditing || this._lookupOpen || this._selectionDragging || this.pdfPanMode) return;
     let sel = null;
     try { sel = doc.getSelection(); } catch { return; }
     if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
@@ -10716,7 +11097,7 @@ const ReaderView = class extends ItemView {
     this._selTimer = window.setTimeout(() => this._onSelectionCheck(), 60);
   }
   _onSelectionCheck() {
-    if (this.engine || this._selectionMenuOpen || this._selectionDragging || this._pdfPanning || this.pdfPanMode || this._editHlId || this._commentEditing) return;
+    if (this.engine || this._selectionMenuOpen || this._selectionDragging || this._pdfPanning || this.pdfPanMode || this._editHlId || this._commentEditing || this._lookupOpen) return;
     const found = flowSelectionParts(this);
     if (!found) {
       this._hideHlPopup();
@@ -10801,6 +11182,7 @@ const ReaderView = class extends ItemView {
     qiaomuReaderClearPaintedSelection();
     closeSelectionColorDropdown(this);
     closeInlineHighlightComment(this);
+    closeLookupCard(this);
     this._hlPopupRect = null;
     this._selectionDoc = null;
     this._pendingSel = null;
@@ -12236,7 +12618,7 @@ const ReaderModal = class extends Modal {
   }
   _engineSelectionCheck({ doc, index }) {
     if (!this.engine || !this.file) return;
-    if (this._editHlId || this._commentEditing || this._selectionDragging) return;
+    if (this._editHlId || this._commentEditing || this._lookupOpen || this._selectionDragging) return;
     let sel = null;
     try { sel = doc.getSelection(); } catch { return; }
     if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
@@ -12423,7 +12805,7 @@ const ReaderModal = class extends Modal {
     this._selTimer = window.setTimeout(() => this._onSelectionCheck(), 80);
   }
   _onSelectionCheck() {
-    if (this.engine || this._selectionMenuOpen || this._selectionDragging || this._pdfPanning || this.pdfPanMode || this._editHlId || this._commentEditing) return;
+    if (this.engine || this._selectionMenuOpen || this._selectionDragging || this._pdfPanning || this.pdfPanMode || this._editHlId || this._commentEditing || this._lookupOpen) return;
     const found = flowSelectionParts(this);
     if (!found) {
       this._hideHlPopup();
@@ -12506,6 +12888,7 @@ const ReaderModal = class extends Modal {
     qiaomuReaderClearPaintedSelection();
     closeSelectionColorDropdown(this);
     closeInlineHighlightComment(this);
+    closeLookupCard(this);
     this._hlPopupRect = null;
     this._selectionDoc = null;
     this._pendingSel = null;
@@ -13743,17 +14126,112 @@ const SettingsTab = class extends PluginSettingTab {
       .setName(qiaomuReaderTranslate("translate-button-in-the-selection-popup"))
       .setDesc(qiaomuReaderTranslate("adds-a-translate-button-to-the-popup-that-appears-when-you-selec"))
       .addToggle((toggle) => toggle.setValue(this.plugin.settings.translateEnabled === true).onChange(async (v) => {
-        this.plugin.settings.translateEnabled = v; await this.plugin.saveAll();
-        if (v) new Notice(qiaomuReaderTranslate("this-is-an-early-version-of-the-feature-translation-uses-the-fre"), 1e4);
+        this.plugin.settings.translateEnabled = v; await this.plugin.saveAll(); this._redraw();
       }));
+    if (this.plugin.settings.translateEnabled !== true) return;
+    const aiReady = lookupAiReady(this.plugin);
+    const cfg = aiConfig(this.plugin);
+    const wantsAi = this.plugin.settings.translateEngine === "ai";
+    const engine = new Setting(host)
+      .setName(qiaomuReaderTranslate("translation-engine"))
+      .setDesc(qiaomuReaderTranslate(wantsAi && !aiReady ? "lk-ai-not-ready"
+        : wantsAi ? "lk-ai-desc"
+        : "lk-google-desc"))
+      .addDropdown((dropdown) => {
+        dropdown.addOption("google", qiaomuReaderTranslate("engine-google"));
+        dropdown.addOption("ai", cfg.provider ? qiaomuReaderTranslate("engine-ai-0", qiaomuReaderTranslate(cfg.provider.label)) : qiaomuReaderTranslate("engine-ai"));
+        dropdown.setValue(wantsAi ? "ai" : "google").onChange(async (v) => {
+          this.plugin.settings.translateEngine = v; await this.plugin.saveAll(); this._redraw();
+        });
+      });
+    if (wantsAi && !aiReady) {
+      engine.descEl.addClass("qiaomu-reader-setting-warning");
+      engine.addButton((btn) => btn.setButtonText(qiaomuReaderTranslate("set-up-ai"))
+        .onClick(() => openPluginAiSettings(this.app, this.plugin, () => this._redraw())));
+    }
     new Setting(host)
       .setName(qiaomuReaderTranslate("translate-into"))
-      .setDesc(qiaomuReaderTranslate("the-language-to-translate-the-selected-fragment-into-the-source"))
+      .setDesc(qiaomuReaderTranslate("lk-target-desc"))
       .addDropdown((dropdown) => {
         TRANSLATION_LANGUAGE_CHOICES.forEach(([value, label]) => dropdown.addOption(value, qiaomuReaderTranslate(label)));
         dropdown.setValue(this.plugin.settings.translateTo || "zh-CN")
           .onChange(async (v) => { this.plugin.settings.translateTo = v; await this.plugin.saveAll(); });
       });
+    this._vocabularyRows(host);
+  }
+  _vocabularyRows(host) {
+    const plugin = this.plugin, settings = plugin.settings, tx = qiaomuReaderTranslate;
+    const path = vocabularyPath(plugin);
+    const exists = plugin.app.vault.getAbstractFileByPath(path) instanceof TFile;
+    const book = new Setting(host).setName(tx("vocabulary-note"));
+    book.descEl.appendText(tx(exists ? "vb-saved-in" : "vb-created-at"));
+    book.descEl.createEl("code", { text: path });
+    if (exists) book.addButton((btn) => btn.setButtonText(tx("open")).onClick(() => void openVocabulary(plugin)));
+    book.addButton((btn) => btn.setButtonText(tx("change-location")).onClick(() => {
+      this._vocabularyPathOpen = !this._vocabularyPathOpen; this._redraw();
+    }));
+    if (this._vocabularyPathOpen) {
+      const where = new Setting(host).setName(tx("vocabulary-location"))
+        .setDesc(tx("vb-location-desc"));
+      where.addText((text) => {
+        text.setPlaceholder(defaultVocabularyPath(notesFolderPath(this.app), vocabularyZh())).setValue(path);
+        const commit = async () => {
+          let value = text.getValue().trim();
+          if (!value) value = defaultVocabularyPath(notesFolderPath(this.app), vocabularyZh());
+          if (!/\.md$/i.test(value)) value += ".md";
+          try {
+            const folder = value.includes("/") ? value.slice(0, value.lastIndexOf("/")) : "";
+            noteFolderPath(folder);
+            if (!folder) throw new Error("root");
+          } catch {
+            text.inputEl.setAttr("aria-invalid", "true");
+            where.descEl.setText(tx("vb-no-root"));
+            return;
+          }
+          settings.vocabularyFile = qiaomuReaderPath(value);
+          await plugin.saveAll();
+          this._vocabularyPathOpen = false;
+          this._redraw();
+        };
+        text.inputEl.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); void commit(); } });
+        where.addButton((btn) => btn.setButtonText(tx("save")).setCta().onClick(() => void commit()));
+      });
+    }
+    const srReady = !!plugin.app.plugins?.enabledPlugins?.has?.("obsidian-spaced-repetition");
+    const review = new Setting(host).setName(tx("vb-review-sr"));
+    if (srReady) review.setDesc(tx("vb-sr-deck", vocabularyDeckName()));
+    else {
+      review.setDesc(tx("vb-sr-install"));
+      review.addButton((btn) => btn.setButtonText(tx("view-plugin")).onClick(() => window.open("obsidian://show-plugin?id=obsidian-spaced-repetition")));
+    }
+    new Setting(host)
+      .setName(tx("sync-to-anki"))
+      .setDesc(tx("anki-sync-desc", ANKI_ADDON_CODE))
+      .addToggle((toggle) => toggle.setValue(settings.ankiSync === true).onChange(async (v) => {
+        settings.ankiSync = v; await plugin.saveAll(); this._redraw();
+      }));
+    if (settings.ankiSync !== true) return;
+    const deck = new Setting(host).setName(tx("anki-deck"));
+    deck.addText((text) => text.setPlaceholder(ANKI_DEFAULT_DECK).setValue(settings.ankiDeck || "")
+      .onChange(async (v) => { settings.ankiDeck = v.trim(); await plugin.saveAll(); }));
+    const status = new Setting(host).setName(tx("anki-connection"));
+    const paint = (text, error = false) => { status.descEl.setText(text); status.descEl.toggleClass("qiaomu-reader-setting-warning", error); };
+    paint(tx("not-checked-yet"));
+    status.addButton((btn) => btn.setButtonText(tx("test")).onClick(async () => {
+      btn.setDisabled(true); paint(tx("checking"));
+      try {
+        const { url, deck: name } = ankiTarget(plugin);
+        await ensureAnkiSetup(ankiPost, url, name);
+        paint(tx("anki-ready", name));
+      } catch (error) { paint(ankiErrorMessage(error), true); }
+      finally { btn.setDisabled(false); }
+    }));
+    status.addButton((btn) => btn.setButtonText(tx("sync-all-words")).onClick(async () => {
+      btn.setDisabled(true); paint(tx("syncing"));
+      const result = await syncVocabularyToAnki(plugin);
+      paint(result ? tx("anki-sync-result", result.added, result.skipped) : tx("anki-sync-failed"), !result);
+      btn.setDisabled(false);
+    }));
   }
   _unreadableStoreCard(c, detail) {
     const tx = (s) => qiaomuReaderTranslate(s);

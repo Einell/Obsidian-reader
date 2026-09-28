@@ -60,6 +60,17 @@ Qiaomu Reader 是中文优先的 Obsidian EPUB、PDF、FB2、MOBI、AZW3 和 CBZ
 
 选中文字，常用操作出现在选文旁边；右键也能使用这些功能。划线颜色通过下拉菜单切换，三种颜色使用统一样式。朱雀仿宋随插件离线提供，也可选择本机字体或导入字体文件；主题、字号、行距与单/双页布局可在阅读设置中调整。书页背景覆盖阅读区域，工具栏跟随 Obsidian。
 
+### 划词翻译、查词和生词本（4.5.0）
+
+![4.5.0 查词卡片：选中 Caucus-Race 后，AI 结合所在句子与书名给出音标、本句义、常见义项、用法说明和例句，可一键收录到生词本](docs/assets/lookup-4.5.0.jpg)
+
+在「设置 → AI 与翻译 → 划线翻译」打开翻译按钮后，选中文字点 **翻译**：选中一个词或短语会显示查词卡片，选中一句或一段会显示译文。结果就在选文旁边，点别处或按 Esc 关闭。
+
+- **翻译引擎**：默认免费的谷歌翻译；也可以改用已经配置好的 AI 服务，包括本机 Codex、Claude、Grok、Kimi 等 CLI。AI 会参考所在句子和书名，让词义贴合上下文。AI 未就绪时自动退回谷歌。
+- **语言**：原文语言自动识别，只需设一个目标语言；原文已经是目标语言时改译为英文（或中文）。卡片右上角可临时切换目标语言，本次阅读有效，不改默认设置。
+- **生词本**：查词卡片上点 **收录**，词条连同原句和回到书中位置的链接存进一篇生词本笔记。默认位于 `乔木阅读/生词本.md`（设置了新笔记文件夹时放在那里），首次收录时自动创建，可在设置里改位置；同一个词再次收录只补充新例句。
+- **复习**：生词本直接采用 [Spaced Repetition](https://github.com/st3v3nmw/obsidian-spaced-repetition) 插件的卡片格式，安装该插件即可复习，复习进度由它写在卡片末尾，插件不会改写。也可以打开「同步到 Anki」，通过 Anki 桌面版的 AnkiConnect 插件（代码 2055492159）把新词加入指定牌组；「同步全部生词」会补上 Anki 里还没有的词。
+
 ### 3. 划线成为笔记，还能回到原文
 
 ![4.2.4 划线与笔记并排：左侧原书粉色划线，右侧 Markdown 阅读笔记包含引文、回跳链接与批注](docs/assets/showcase-4.2.4-notes.jpg)
@@ -187,7 +198,8 @@ CLI 模式会自动检测可执行文件和登录状态，在独立临时目录�
 | 找书与下载 | 主动搜索时发送书名或作者关键词；仅在点击下载时请求所选书籍目录和 EPUB | Project Gutenberg |
 | 外部书源搜索 | 主动搜索时在浏览器打开带有关键词的搜索页；插件不向这些网站发送仓库内容 | Anna’s Archive、Z-Library |
 | 外部书源链接 | 点击后在浏览器打开网站；插件不向这些网站发送仓库内容 | Standard Ebooks、维基文库 |
-| 翻译所选文字 | 当前选中的段落 | Google Translate |
+| 翻译与查词 | 当前选中的文字；使用 AI 引擎时还包括所在句子和书名 | Google Translate，或你选择的 AI 服务 |
+| 同步到 Anki | 收录的生词、释义和原句 | 本机的 AnkiConnect（默认 `127.0.0.1:8765`） |
 | AI 辅助阅读 | 你主动附加的 PDF 全文、当前页或选中文本、书名和问题 | 你明确选择并配置的模型服务 |
 | 本机 CLI 账号 | 你主动附加的 PDF 全文、当前页或选中文本、书名和问题 | Codex、Claude、Grok、Kimi 或 ZCode 的云端服务 |
 | 本地 AI | 本轮附加的 PDF 全文、当前页或选文、书名与问题，以及必要的对话历史 | 你配置的 Ollama 或 LM Studio 地址；仅在本机地址且服务不转发时留在设备内 |
@@ -252,6 +264,10 @@ For updates, use **Settings → Community plugins → Check for updates**, then 
 ### Read, highlight and keep notes
 
 Qiaomu Reader is a Chinese-first reader for Obsidian supporting EPUB, PDF, FB2, MOBI, AZW3 and CBZ. PDF files retain their original fixed page layout; pages with a reliable text layer support selection, search, highlights, annotations and full-document or selected-text AI context, while scan-only pages provide original-page reading, progress and one book-level note without pretending OCR is available. The plugin keeps one dedicated Markdown reading note per book inside your vault.
+
+### Selection translation, word lookup and vocabulary (4.5.0)
+
+Select text and press **Translate**: a word or short phrase opens a dictionary card, a longer passage opens a translation, right beside the selection. Use free Google Translate or the AI service you already configured (including local CLIs); AI reads the surrounding sentence and the book title. The source language is detected automatically and the target can be switched per session from the card. **Add word** saves the word, its sentence and a link back to the book into one vocabulary note formatted for the Spaced Repetition plugin, with optional sync to Anki through AnkiConnect.
 
 ### A reading workflow, not just a chat window
 
