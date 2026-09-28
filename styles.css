@@ -1591,6 +1591,9 @@ button.qiaomu-reader-find-item.qiaomu-reader-toc-active { background: var(--back
   color: var(--text-normal);
 }
 
+/* Per-window state follows workspace events and is removed on plugin unload. */
+body.qiaomu-reader-active-view .status-bar { display: none; }
+
 /* Bundled reading subset: SIL OFL 1.1
 Copyright (c) 2023, Zhejiang JadeFoci Techonology Co. LTD
 (https://www.jadefoci.com/)
