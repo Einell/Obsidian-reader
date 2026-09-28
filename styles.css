@@ -354,7 +354,7 @@ img.qiaomu-reader-pdf-lazy:not([data-loaded="1"]) { background:color-mix(in srgb
 .qiaomu-reader-lookup-lemma-word { color:var(--lk-ink); font-weight:600; }
 .qiaomu-reader-lookup-meaning { font-size:14px; line-height:1.65; font-weight:500; }
 .qiaomu-reader-lookup-senses { margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:4px; }
-.qiaomu-reader-lookup-senses li { display:grid; grid-template-columns:auto 1fr; column-gap:8px; align-items:baseline; }
+.qiaomu-reader-lookup-senses li { display:grid; grid-template-columns:auto 1fr; gap:0 8px; align-items:baseline; }
 .qiaomu-reader-lookup-pos { min-width:24px; font-family:var(--font-monospace); font-size:11px; color:var(--lk-muted); }
 .qiaomu-reader-lookup-note { color:var(--lk-muted); font-size:12px; line-height:1.6; }
 .qiaomu-reader-lookup-example { padding:8px 10px; border-radius:8px; background:var(--lk-tint); font-size:12.5px; line-height:1.6; }
@@ -362,8 +362,8 @@ img.qiaomu-reader-pdf-lazy:not([data-loaded="1"]) { background:color-mix(in srgb
 .qiaomu-reader-lookup-actions { display:flex; align-items:center; gap:6px; padding:8px 10px 8px 16px; border-top:1px solid var(--lk-line); }
 .qiaomu-reader-lookup-engine { flex:1; display:flex; align-items:center; gap:10px; min-width:0; font-size:12px; color:var(--lk-muted); white-space:nowrap; }
 .qiaomu-reader-lookup-actions button { height:28px; min-height:28px; font-size:12px; font-weight:500; border:none; border-radius:6px; box-shadow:none; cursor:pointer; transition:background-color .12s, color .12s, opacity .12s; }
-.qiaomu-reader-lookup-actions .qiaomu-reader-lookup-switch { padding:0; height:auto; min-height:0; background:transparent; color:var(--lk-muted); text-decoration:underline; text-decoration-color:var(--lk-line); text-underline-offset:3px; }
-.qiaomu-reader-lookup-actions .qiaomu-reader-lookup-switch:hover { background:transparent; color:var(--lk-ink); text-decoration-color:currentColor; }
+.qiaomu-reader-lookup-actions .qiaomu-reader-lookup-switch { padding:0 0 1px; height:auto; min-height:0; border-radius:0; background:transparent; color:var(--lk-muted); box-shadow:inset 0 -1px 0 var(--lk-line); }
+.qiaomu-reader-lookup-actions .qiaomu-reader-lookup-switch:hover { background:transparent; color:var(--lk-ink); box-shadow:inset 0 -1px 0 currentColor; }
 .qiaomu-reader-lookup-actions .qiaomu-reader-lookup-icon { width:28px; padding:0; display:inline-flex; align-items:center; justify-content:center; background:transparent; color:var(--lk-muted); }
 .qiaomu-reader-lookup-actions .qiaomu-reader-lookup-icon:hover { background:var(--lk-tint-strong); color:var(--lk-ink); }
 .qiaomu-reader-lookup-icon svg { width:15px; height:15px; stroke-width:1.8; }
@@ -374,7 +374,7 @@ img.qiaomu-reader-pdf-lazy:not([data-loaded="1"]) { background:color-mix(in srgb
 .qiaomu-reader-lookup-add-icon { display:inline-flex; }
 .qiaomu-reader-lookup-add-icon svg { width:13px; height:13px; stroke-width:2.2; }
 .qiaomu-reader-lookup button:focus-visible { outline:2px solid color-mix(in srgb,var(--lk-ink) 55%,transparent); outline-offset:2px; }
-@media (pointer: coarse) { .qiaomu-reader-lookup-actions button { height:40px; min-height:40px; } .qiaomu-reader-lookup-actions .qiaomu-reader-lookup-icon { width:40px; } .qiaomu-reader-lookup-actions .qiaomu-reader-lookup-switch { height:40px; } }
+@media (pointer: coarse) { .qiaomu-reader-lookup-actions button { height:40px; min-height:40px; } .qiaomu-reader-lookup-actions .qiaomu-reader-lookup-icon { width:40px; } }
 .qiaomu-reader-setting-warning { color:var(--text-warning); }
 .qiaomu-reader-hl-comment-editor { width: 320px; max-width: min(320px, calc(100vw - 38px)); display:flex; flex-direction:column; gap:9px; }
 .qiaomu-reader-hl-comment-quote { display:-webkit-box; overflow:hidden; -webkit-box-orient:vertical; -webkit-line-clamp:3; padding:8px 10px; border-radius:9px; background:color-mix(in srgb,var(--qiaomu-reader-text) 5%,transparent); color:var(--qiaomu-reader-muted); font-size:12px; line-height:1.5; cursor:pointer; white-space:normal; overflow-wrap:anywhere; }
