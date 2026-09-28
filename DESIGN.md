@@ -177,3 +177,11 @@ not be presented as available when the active provider accepts text only.
 - Acceptance uses one text-heavy PDF, one chart/table report, one image-only
   scan, one Traditional Chinese CMap PDF, desktop page mode, desktop scroll mode
   and a narrow mobile viewport.
+
+## 12. Selection translation and lookup card
+
+- Plugin-owned UI follows the Vercel-style neutral system: reading-theme ink and paper only. The one primary action is ink-filled with paper text and inverts in dark themes. Secondary and completed states are transparent with a 1px shadow-as-border; text actions are muted with a faint underline. Never use the host purple `--interactive-accent` for buttons, links or decoration.
+- The card replaces the selection toolbar inside the same popup: 12px radius, layered low-opacity shadow, 16px content inset and a hairline footer divider.
+- Header: term (17px/600) with phonetic in small muted monospace, and a ghost target-language chip. Body: in-context meaning first, then senses with a monospace part-of-speech column, a muted note and a tinted example block. Footer: engine name, one-click engine switch, **Add word**, copy, save.
+- Verify in light, dark and one tinted reading theme; no accent colour may appear.
+
