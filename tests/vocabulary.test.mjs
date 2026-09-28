@@ -4,7 +4,7 @@ import {
   defaultVocabularyPath, vocabularyHeader, cardText, vocabularyKey, buildVocabularyCard,
   parseVocabularyCards, addToVocabulary, ankiFieldsFromCard, MAX_CARD_CONTEXTS,
 } from "../src/vocabulary.js";
-import { ankiInvoke, addAnkiNotes, ankiNote, ANKI_MODEL } from "../src/anki.js";
+import { ankiInvoke, addAnkiNotes, ankiNote, ANKI_MODEL, MODEL_CSS } from "../src/anki.js";
 
 const entry = (over = {}) => ({
   term: "serendipity", lemma: "serendipity", phonetic: "/ˌserənˈdɪpəti/", meaning: "意外发现美好事物的运气",
@@ -115,4 +115,8 @@ test("anki: errors carry a recovery reason", async () => {
   await assert.rejects(ankiInvoke(fakeAnki({ status: 403 }).post, "", "version"), (e) => e.qiaomuReaderReason === "ankiforbidden");
   const apiError = async () => ({ status: 200, json: { result: null, error: "deck was not found" } });
   await assert.rejects(ankiInvoke(apiError, "", "addNotes"), (e) => e.qiaomuReaderReason === "ankiapi" && /deck/.test(e.message));
+});
+
+test("anki note type leaves colours to Anki so night mode works", () => {
+  assert.doesNotMatch(MODEL_CSS, /(color|background)\s*:\s*(#|rgb|hsl|white|black)/i);
 });

@@ -7,8 +7,9 @@ export const ANKI_DEFAULT_DECK = "Qiaomu Reader";
 export const ANKI_MODEL = "Qiaomu Reader Vocabulary";
 export const ANKI_ADDON_CODE = "2055492159";
 
-const MODEL_CSS = ".card{font-family:-apple-system,system-ui,sans-serif;font-size:20px;line-height:1.5;text-align:left;color:#222;background:#fff;}"
-  + ".word{font-size:28px;font-weight:600;}.ctx{margin-top:14px;color:#666;font-size:16px;}.nightMode .ctx{color:#aaa;}";
+// Colours are left to Anki so its light and night modes both work.
+const MODEL_CSS = ".card{font-family:-apple-system,system-ui,sans-serif;font-size:20px;line-height:1.55;text-align:left;}"
+  + ".word{font-size:28px;font-weight:600;letter-spacing:-0.01em;}.ctx{margin-top:14px;font-size:16px;opacity:.65;}.ctx a{color:inherit;}";
 
 function ankiError(reason, message) {
   const error = new Error(message || reason);
@@ -32,6 +33,7 @@ export async function ankiInvoke(post, url, action, params = {}) {
   return data.result;
 }
 
+export { MODEL_CSS };
 export async function ensureAnkiSetup(post, url, deck) {
   await ankiInvoke(post, url, "createDeck", { deck });
   const models = await ankiInvoke(post, url, "modelNames");
