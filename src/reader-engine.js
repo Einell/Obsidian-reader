@@ -1,6 +1,7 @@
 import { HIGHLIGHT_PAINTS } from "./highlight-colors.js";
 import { createBookCover, isGeneratedBookCover } from "./book-cover.js";
 import { waitForEngineViewport } from "./engine-viewport.js";
+import { enginePositionModel } from "./reader-position.js";
 export { HIGHLIGHT_PAINTS } from "./highlight-colors.js";
 // Qiaomu Reader — e-book rendering engine.
 //
@@ -271,6 +272,16 @@ export class EpubEngine {
 
     currentLocation() {
         return this.#view?.lastLocation ?? null;
+    }
+
+    positionModel() {
+        return enginePositionModel(this.currentLocation(), this.#book, this.contents()[0]?.index || 0);
+    }
+
+    async goToPosition(target) {
+        if (target.href) return this.goTo(target.href);
+        if (Number.isInteger(target.page)) return this.goTo(target.page - 1);
+        return this.goToFraction(target.fraction);
     }
 
     // CFI for a DOM range inside a rendered section document — used by the

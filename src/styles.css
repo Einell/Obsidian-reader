@@ -97,6 +97,16 @@ img.qiaomu-reader-pdf-lazy:not([data-loaded="1"]) { background:color-mix(in srgb
 .qiaomu-reader-loc-clickable { cursor:pointer; border:0; box-shadow:none; background:transparent; border-radius:5px; padding:1px 6px; transition:background .13s,color .13s; }
 .qiaomu-reader-loc-clickable:hover { color:var(--text-normal); background:var(--background-modifier-hover); }
 .qiaomu-reader-gotopage-input { width:100%; box-sizing:border-box; margin:2px 0 14px; padding:8px 10px; font-size:15px; border:1px solid var(--background-modifier-border); border-radius:8px; background:var(--background-primary); color:var(--text-normal); }
+.qiaomu-reader-position-modal { width:min(420px, calc(100vw - 32px)); }
+.qiaomu-reader-position-fields { display:grid; grid-template-columns:minmax(0, 1fr) minmax(0, 1fr); gap:12px; }
+.qiaomu-reader-position-fields label { display:flex; flex-direction:column; gap:6px; min-width:0; font-size:13px; color:var(--text-muted); }
+.qiaomu-reader-position-fields input, .qiaomu-reader-position-fields select { width:100%; min-width:0; height:44px; margin:0; border:1px solid var(--background-modifier-border); border-radius:8px; color:var(--text-normal); background:var(--background-primary); box-shadow:none; }
+.qiaomu-reader-position-fields input:focus, .qiaomu-reader-position-fields select:focus { border-color:var(--text-normal); box-shadow:none; }
+.qiaomu-reader-position-fields input:focus-visible, .qiaomu-reader-position-fields select:focus-visible { outline:none; border-color:var(--text-normal); }
+.qiaomu-reader-position-hint { margin:10px 0 14px; font-size:12px; color:var(--text-muted); }
+.qiaomu-reader-position-modal .qiaomu-reader-confirm-btns button { min-height:40px; background:transparent; color:var(--text-normal); box-shadow:0 0 0 1px var(--background-modifier-border); }
+.qiaomu-reader-position-modal .qiaomu-reader-confirm-btns .qiaomu-reader-confirm-yes { background:var(--text-normal); color:var(--background-primary); box-shadow:none; }
+.qiaomu-reader-position-modal .qiaomu-reader-confirm-btns .qiaomu-reader-confirm-yes:hover { opacity:.85; }
 .qiaomu-reader-pct { font-family:'Inter',system-ui,sans-serif; font-size:14px; font-weight:700; color:var(--text-accent); }
 .qiaomu-reader-pct::before { content:"·"; margin-right:6px; color:var(--text-muted); font-weight:500; }
 /* White chrome stays distinct from the selected page paper. */
