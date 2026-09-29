@@ -53,6 +53,8 @@ import { normalizeCustomFontFamily, resolveReaderFont, readerTextCss, syncPageBu
 import { BUNDLED_FONT_FAMILIES, ensureBundledReaderFont } from "./bundled-fonts.js";
 import { cloneJson, createSerialTaskQueue, isPlainRecord, mergeReadingProgress, readJsonRecordStore, writeVerifiedJsonRecord } from "./storage.js";
 import { createReaderLoadCoordinator, isReaderLoadAbort, throwIfReaderLoadAborted, waitForReaderFrame } from "./reader-load.js";
+import { configureEngineFrames } from "./engine-frame.js";
+import { parseReaderPosition } from "./reader-position.js";
 import { CalibreSearchModal, calibreSafeFilename } from "./calibre-modal.js";
 import { calibreRuntime } from "./calibre-node.js";
 import {
@@ -949,7 +951,6 @@ function buildReaderBotNav(view, root, bot, opts = {}) {
   prev.addEventListener("click", () => turn("prev"));
   const strip = bot.createDiv("qiaomu-reader-bot-center");
   view.locEl = strip.createEl("button", { cls: "qiaomu-reader-loc qiaomu-reader-loc-clickable", attr: kind });
-  view.locEl.setAttribute("aria-label", qiaomuReaderTranslate("go-to-page"));
   view.locEl.addEventListener("click", () => openReaderPagePicker(view));
   view.pctEl = strip.createDiv("qiaomu-reader-pct");
   view.pctEl.setText("0%");
@@ -1504,6 +1505,7 @@ const QiaomuBookReader = class extends Plugin {
     this._unreadableStores = new Map();
   }
   async onload() { // state first (loadAll), then every Obsidian integration, registered in the original order
+    configureEngineFrames(Platform.isAndroidApp);
     await this.loadAll(); await this._attachAiDraftStore();
     this._unloading = false;
     this._watchCompanionAndNotes();
@@ -3624,7 +3626,12 @@ function updateEngineLocation(view, detail) {
   const pct = Math.round(Math.max(0, Math.min(1, detail.fraction || 0)) * 100);
   if (view.pbarFill) view.pbarFill.style.width = `${pct}%`;
   view.pctEl?.setText(`${pct}%`);
-  view.locEl?.setText(detail.tocItem?.label || qiaomuReaderTranslate("reading-position"));
+  const position = view.engine?.positionModel?.();
+  view.locEl?.setText(position?.kind === "original" && position.current
+    ? qiaomuReaderTranslate("position-original-page", position.current)
+    : position?.kind === "location" ? qiaomuReaderTranslate("position-location-of", position.current, position.total)
+    : position?.kind === "page" ? qiaomuReaderTranslate("page-0-of-1", position.current, position.total)
+    : detail.tocItem?.label || qiaomuReaderTranslate("reading-position"));
   syncReaderAiCapability(view);
   if (!view._openingBook) {
     syncOpenAiReaderContext(view);
@@ -4021,10 +4028,25 @@ function pdfVisiblePageLabel(view, first) {
 }
 
 function openReaderPagePicker(view) {
-  if (!view.file || !view.pager?.total) return;
+  if (view.file && view.engine && !view._openingBook) {
+    const engine = view.engine, file = view.file;
+    const isCurrent = () => !view._closed && view.file === file && view.engine === engine && !view._openingBook;
+    const position = engine.positionModel();
+    new GoToPageModal(view.app, position.total, 0, async target => {
+      if (!isCurrent()) throw new Error("Reader changed");
+      const cfi = engine.currentLocation()?.cfi;
+      await engine.goToPosition(target);
+      if (!isCurrent()) throw new Error("Reader changed");
+      if (cfi) showFootnoteReturn(view, { cfi });
+    }, { position, isCurrent }).open();
+    return;
+  }
+  if (!view.file || view.engine || view._openingBook || !view.pager?.total) return;
   const pager = view.pager;
+  const file = view.file;
   const pages = readerIsPdf(view) ? readerPdfPages(view) : [];
   new GoToPageModal(view.app, pages.length || pager.total, pages.length ? (pager.currentPdfPageNumber() || 1) - 1 : pager.spread, (n) => {
+    if (view._closed || view.file !== file || view.pager !== pager || view.engine || view._openingBook) throw new Error("Reader changed");
     rememberReaderJump(view);
     if (pages.length && pager.scrollMode) {
       pager.clip.scrollTop += pages[n - 1].getBoundingClientRect().top - pager.clip.getBoundingClientRect().top;
@@ -9381,44 +9403,74 @@ const ConfirmModal = class extends Modal {
   }
 };
 const GoToPageModal = class extends Modal {
-  constructor(app, total, current, onSubmit) {
+  constructor(app, total, current, onSubmit, options = {}) {
     super(app);
     this.total = total;
     this.current = current || 0;
     this.onSubmit = onSubmit;
+    this.options = options;
+    this.position = options.position || { kind: "page", total, current: (current || 0) + 1, fraction: current / Math.max(1, total - 1) };
   }
   onOpen() {
     const { contentEl, modalEl } = this;
-    modalEl.addClass("qiaomu-reader-confirm-modal");
+    modalEl.addClass("qiaomu-reader-confirm-modal", "qiaomu-reader-position-modal");
     contentEl.empty();
-    contentEl.createDiv("qiaomu-reader-confirm-title").setText(qiaomuReaderTranslate("go-to-page"));
-    const input = contentEl.createEl("input", { cls: "qiaomu-reader-gotopage-input", attr: { type: "text", placeholder: `1–${this.total} / 50%`, "aria-label": qiaomuReaderTranslate("page-number-or-percentage") } });
+    this.setTitle(qiaomuReaderTranslate("position-jump-title"));
+    const model = this.position;
+    const row = contentEl.createDiv("qiaomu-reader-position-fields");
+    const modeLabel = row.createEl("label");
+    modeLabel.createSpan({ text: qiaomuReaderTranslate("position-jump-by") });
+    const mode = modeLabel.createEl("select");
+    if (model.kind !== "percent") mode.createEl("option", { value: model.kind, text: qiaomuReaderTranslate(model.kind === "original" ? "position-original" : model.kind === "location" ? "reading-position" : "position-page") });
+    mode.createEl("option", { value: "percent", text: qiaomuReaderTranslate("position-percent") });
+    const valueLabel = row.createEl("label");
+    valueLabel.createSpan({ text: qiaomuReaderTranslate("position-target") });
+    const input = valueLabel.createEl("input", { cls: "qiaomu-reader-gotopage-input", attr: { type: "text", enterkeyhint: "go", autocomplete: "off" } });
+    const hint = contentEl.createDiv("qiaomu-reader-position-hint");
     const error = contentEl.createDiv({ cls: "qiaomu-reader-title-error", attr: { role: "alert" } });
-    input.value = String(this.current + 1);
-    const submit = () => {
-      const raw = input.value.trim();
-      const percent = /^(?:\d+(?:\.\d+)?|\.\d+)%$/.test(raw);
-      const value = Number(percent ? raw.slice(0, -1) : raw);
-      if ((!percent && !/^\d+$/.test(raw)) || !Number.isFinite(value) || value < (percent ? 0 : 1) || value > (percent ? 100 : this.total)) {
-        error.setText(qiaomuReaderTranslate("enter-a-valid-page-number-or-0-100")); return;
+    const reset = () => {
+      error.empty(); input.removeAttribute("aria-invalid");
+      input.setAttribute("inputmode", mode.value === "original" ? "text" : mode.value === "percent" ? "decimal" : "numeric");
+      input.value = mode.value === "percent" ? String(Math.round(model.fraction * 100)) : String(model.current);
+      input.placeholder = mode.value === "percent" ? "0–100" : mode.value === "original" ? model.pages[0].label : `1–${model.total}`;
+      hint.setText(qiaomuReaderTranslate(mode.value === "location" ? "position-location-help" : mode.value === "original" ? "position-original-help" : "position-range", mode.value === "percent" ? "0–100%" : `1–${model.total}`));
+    };
+    reset();
+    mode.addEventListener("change", () => { reset(); input.focus(); input.select(); });
+    input.addEventListener("input", () => { error.empty(); input.removeAttribute("aria-invalid"); });
+    const submit = async () => {
+      if (this._busy || this._closed) return;
+      const target = parseReaderPosition(input.value, model, mode.value);
+      if (!target) {
+        error.setText(qiaomuReaderTranslate("position-invalid")); input.setAttribute("aria-invalid", "true"); return;
       }
-      const n = percent ? 1 + Math.round((this.total - 1) * value / 100) : value;
-      this.close();
-      this.onSubmit(n);
+      this._busy = true; go.disabled = true; mode.disabled = true; input.disabled = true;
+      try {
+        if (this.options.isCurrent && !this.options.isCurrent()) throw new Error("Reader changed");
+        const value = this.options.position ? target : target.page ?? 1 + Math.round((this.total - 1) * target.fraction);
+        await this.onSubmit(value);
+        if (!this._closed) this.close();
+      } catch {
+        if (!this._closed) error.setText(qiaomuReaderTranslate("position-jump-failed"));
+      } finally {
+        this._busy = false; go.disabled = false; mode.disabled = false; input.disabled = false;
+      }
     };
     input.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.isComposing && e.keyCode !== 229) {
         e.preventDefault();
-        submit();
+        void submit();
       }
     });
     const btns = contentEl.createDiv("qiaomu-reader-confirm-btns");
-    const go = btns.createEl("button", { text: qiaomuReaderTranslate("go") });
+    btns.createEl("button", { text: qiaomuReaderTranslate("cancel"), attr: { type: "button" } }).addEventListener("click", () => this.close());
+    const go = btns.createEl("button", { text: qiaomuReaderTranslate("position-go") });
     go.addClass("qiaomu-reader-confirm-yes");
     go.addEventListener("click", submit);
     qiaomuReaderAutoFocus(input, 0);
   }
   onClose() {
+    this._closed = true;
     this.contentEl.empty();
   }
 };

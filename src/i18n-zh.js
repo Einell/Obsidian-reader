@@ -1236,6 +1236,20 @@ export const QIAOMU_READER_ZH_CN = {
   "translation-enable-daily": "启用日记…",
   "translation-saved": "已保存到 {0}",
   "translation-save-failed": "保存失败，请检查目标笔记后重试。",
+  "position-original-page": "原书第 {0} 页",
+  "position-location-of": "阅读位置 {0} / {1}",
+  "position-jump-title": "跳转阅读位置",
+  "position-jump-by": "跳转方式",
+  "position-original": "原书页码",
+  "position-page": "页码",
+  "position-percent": "进度（%）",
+  "position-target": "目标位置",
+  "position-location-help": "阅读位置不随字号变化，并非纸书页码。",
+  "position-original-help": "请输入本书的原页码；序言页可使用罗马数字。",
+  "position-range": "范围：{0}",
+  "position-invalid": "请输入有效位置；原书页码需存在且不重复。",
+  "position-jump-failed": "跳转失败，请确认书籍仍打开后重试。",
+  "position-go": "跳转",
 };
 
 // Native Chinese product copy. The first-pass dictionary above guarantees full
