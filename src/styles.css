@@ -186,6 +186,7 @@
 .qiaomu-reader-lib-search-input::placeholder { color:var(--qiaomu-reader-lib-muted); opacity:.75; }
 .qiaomu-reader-lib-actions { display:flex; align-items:center; gap:8px; flex:0 0 auto; }
 .qiaomu-reader-lib-add { display:inline-flex; align-items:center; gap:7px; height:38px; padding:0 14px 0 12px; border-radius:9px; cursor:pointer; user-select:none; background:var(--qiaomu-reader-lib-text); border:1px solid var(--qiaomu-reader-lib-text); color:var(--qiaomu-reader-lib-bg); font-size:12.5px; font-weight:600; white-space:nowrap; font-family:inherit; transition:background .13s, color .13s, transform .1s; }
+.qiaomu-reader-lib-add.qiaomu-reader-lib-refresh { background:transparent; color:var(--qiaomu-reader-lib-text); border-color:var(--qiaomu-reader-lib-border); }
 .qiaomu-reader-lib-add-calibre { background:transparent; color:var(--qiaomu-reader-lib-text); border-color:var(--qiaomu-reader-lib-border); }
 .qiaomu-reader-lib-add-calibre:hover { color:#fff; }
 .qiaomu-reader-lib-add svg { width:15px; height:15px; flex-shrink:0; }
@@ -234,7 +235,7 @@
 .qiaomu-reader-lib-empty-add:hover { border-color:var(--qiaomu-reader-lib-accent); color:var(--qiaomu-reader-lib-accent); background:color-mix(in srgb,var(--qiaomu-reader-lib-accent) 10%,transparent); }
 .qiaomu-reader-lib-empty-add:active { transform:scale(.97); }
 .qiaomu-reader-lib-empty-add:focus-visible { outline:none; border-color:var(--qiaomu-reader-lib-accent); }
-@media (max-width:560px) { .qiaomu-reader-lib-add-label { display:none; } .qiaomu-reader-lib-add { padding:0 12px; } }
+@media (max-width:560px) { .qiaomu-reader-lib-add-label, .qiaomu-reader-lib-sort-hint { display:none; } .qiaomu-reader-lib-add { padding:0 12px; } }
 
 .modal-container.qiaomu-reader-calibre-modal-container .modal.qiaomu-reader-calibre-modal {
   width: min(560px, 92vw);
@@ -578,7 +579,16 @@
    Chips share the 30px side padding of .qiaomu-reader-lib-hdr and
    .qiaomu-reader-lib-grid so header, chips and covers share one left edge; at
    4px the first chip sat jammed against the window frame. */
-.qiaomu-reader-lib-chips { display:flex; flex-wrap:wrap; gap:8px; padding:0 30px; margin:16px 0 18px; }
+.qiaomu-reader-lib-chips { display:flex; flex-wrap:nowrap; align-items:flex-start; gap:8px; padding:0 30px; margin:16px 0 18px; }
+.qiaomu-reader-lib-chip-list { display:flex; flex-wrap:wrap; gap:8px; flex:1 1 auto; min-width:0; }
+.qiaomu-reader-lib-sort { display:flex; align-items:center; gap:8px; flex:0 0 auto; margin-left:auto; }
+.qiaomu-reader-lib-sort-hint { color:var(--qiaomu-reader-lib-muted); font-size:12px; white-space:nowrap; }
+.qiaomu-reader-lib-sort-btn, .qiaomu-reader-lib-sort-confirm { display:inline-flex; align-items:center; gap:6px; height:32px; padding:0 12px; border-radius:8px; border:1px solid var(--qiaomu-reader-lib-border); background:transparent; color:var(--qiaomu-reader-lib-text); font:inherit; font-size:12.5px; font-weight:600; cursor:pointer; white-space:nowrap; }
+.qiaomu-reader-lib-sort-btn svg { width:14px; height:14px; }
+.qiaomu-reader-lib-sort-btn[aria-pressed="true"], .qiaomu-reader-lib-sort-confirm { border-color:var(--qiaomu-reader-lib-text); background:color-mix(in srgb, var(--qiaomu-reader-lib-text) 6%, transparent); }
+.qiaomu-reader-lib-arranging .qiaomu-reader-lib-card { cursor:grab; }
+.qiaomu-reader-lib-card-dragging { opacity:.45; }
+.qiaomu-reader-lib-card-drop { outline:2px solid var(--qiaomu-reader-lib-accent); outline-offset:3px; }
 .qiaomu-reader-lib-chip { display:inline-flex; align-items:center; gap:7px; padding:6px 13px; border-radius:8px; font-size:12.5px; line-height:1.25; cursor:pointer; user-select:none; white-space:nowrap; color:var(--qiaomu-reader-lib-muted); background:transparent; border:1px solid var(--qiaomu-reader-lib-border); transition:color .13s, border-color .13s, background .13s; }
 .qiaomu-reader-lib-chip:hover { color:var(--qiaomu-reader-lib-text); border-color:var(--qiaomu-reader-lib-muted); }
 .qiaomu-reader-lib-chip-n { font-size:11px; opacity:.6; font-variant-numeric:tabular-nums; }

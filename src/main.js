@@ -36,6 +36,7 @@ import { DRAFT_LIMIT, loadAiDrafts } from "./ai-drafts.js";
 import { aiAnswerMarker, appendAiAnswer, verifiedQuotes, normalizeLocationMarks } from "./reading-workflow.js";
 import { searchableQuery, searchBookBlocks, nextSearchIndex } from "./reader-search.js";
 import { captureReadingAnchor, restoreReadingAnchor, queueReadingLayout, shouldFollowContext, comfortableLineWidth, zoomAnchorOffset, textPoint } from "./reader-experience.js";
+import { applyVisibleMove, sortLibraryBooks } from "./library-sort.js";
 import { deriveAiSetupState } from "./ai-setup-state.js";
 import { PDF_CMAP_OPTIONS } from "./pdf-cmaps.js";
 import { PDF_AI_CONTEXT_MAX_CHARS, READER_BLOCK_SELECTOR, packPdfDocumentContext, pdfPageKind, pdfPageShell, pdfPageTextFallback, pdfPageTextForAi } from "./pdf-page-mode.js";
@@ -123,7 +124,7 @@ const DEFAULT_TRANSLATION = {
 };
 const DEFAULT_LIBRARY_UI = {
   bookNoteLinks: {}, locationMarks: [], bookNotePrompted: {}, coverFits: {},
-  syncMode: "auto", libCategory: "all",
+  syncMode: "auto", libCategory: "all", libSort: "opened", libBookOrder: [],
 };
 const DEFAULT_READER_SESSION = {
   readerAdvOpen: false, readerHistOpen: false,
@@ -11511,6 +11512,7 @@ const LibraryModal = class extends Modal {
     this.plugin = plugin;
   }
   async onOpen() { const { modalEl, contentEl } = this;
+    this._libArrange = null;
     const render = this._libraryRender = {};
     contentEl.empty();
     // The stylesheet matches `.qiaomu-reader-modal-lib .modal`, so the marker
@@ -11536,6 +11538,7 @@ const LibraryModal = class extends Modal {
       this._buildLibEmpty(contentEl, folder);
       return;
     }
+    this._libFiles = files;
     this._sortLibBooks(files);
     const chipRow = contentEl.createDiv("qiaomu-reader-lib-chips"), grid = contentEl.createDiv("qiaomu-reader-lib-grid");
     this._grid = grid;
@@ -11554,14 +11557,17 @@ const LibraryModal = class extends Modal {
       chips = rebuildChips();
     }
     const redraw = (query) => {
+      this._sortLibBooks(files);
       grid.empty();
+      grid.toggleClass("qiaomu-reader-lib-arranging", !!this._libArrange);
       const shown = filterLibBooks(files, selected, query, folder, progressOf, tagsOf)
         .filter(f => selected !== "study:highlights" || marked.has(f.path));
+      this._libVisiblePaths = shown.map((file) => file.path);
       if (shown.length === 0) {
         grid.createDiv("qiaomu-reader-lib-noresult").setText(qiaomuReaderTranslate("nothing-found"));
         return;
       }
-      if (selected === "all" && !query.trim()) {
+      if (!this._libArrange && selected === "all" && !query.trim()) {
         const recent = files.find(f => bookStatusOf(progressOf(f.path)) === "reading");
         if (recent) this._buildLibResume(grid, recent);
       }
@@ -11570,13 +11576,10 @@ const LibraryModal = class extends Modal {
     const drawChipRow = () => {
       chips = rebuildChips();
       chipRow.empty();
-      if (chips.length <= 1) {
-        chipRow.addClass("qiaomu-reader-hidden");
-        return;
-      }
       chipRow.removeClass("qiaomu-reader-hidden");
+      const list = chipRow.createDiv("qiaomu-reader-lib-chip-list");
       for (const c of chips) {
-        const el = chipRow.createDiv("qiaomu-reader-lib-chip");
+        const el = list.createDiv("qiaomu-reader-lib-chip");
         const [labelText, countText] = [c.label, String(c.count)];
         el.createSpan({ text: labelText });
         el.createSpan({ cls: "qiaomu-reader-lib-chip-n", text: countText });
@@ -11585,11 +11588,23 @@ const LibraryModal = class extends Modal {
         if (c.id === selected) el.addClass("qiaomu-reader-lib-chip-on");
         this._activateOnClick(el, () => activateChip(c));
       }
+      const sortTools = chipRow.createDiv("qiaomu-reader-lib-sort");
+      if (this._libArrange) {
+        sortTools.createSpan({ cls: "qiaomu-reader-lib-sort-hint", text: qiaomuReaderTranslate("drag-to-reorder-books") });
+        const done = sortTools.createEl("button", { cls: "qiaomu-reader-lib-sort-confirm", text: qiaomuReaderTranslate("confirm-book-order"), attr: { type: "button" } });
+        done.addEventListener("click", () => this._confirmCustomOrder());
+      }
+      const sort = sortTools.createEl("button", { cls: "qiaomu-reader-lib-sort-btn", attr: { type: "button", "aria-label": qiaomuReaderTranslate("sort-books"), "aria-pressed": String(!!this._libArrange || this.plugin.settings.libSort === "custom") } });
+      svgIcon(sort, "sliders");
+      sort.createSpan({ text: qiaomuReaderTranslate("sort-books") });
+      sort.addEventListener("click", (event) => this._openLibSortMenu(event));
     };
     const activateChip = async (c) => {
       this.plugin.settings.libCategory = selected = c.id;
       await this.plugin._saveLocalData(); drawChipRow(); redraw(input.value);
     };
+    this._redrawLib = () => redraw(input.value);
+    this._drawChipRow = drawChipRow;
     drawChipRow();
     input.addEventListener("input", () => redraw(input.value));
     redraw("");
@@ -11629,6 +11644,13 @@ const LibraryModal = class extends Modal {
 
     // Primary action: import book files into the library folder.
     const actions = headline.createDiv("qiaomu-reader-lib-actions");
+    const refresh = actions.createDiv("qiaomu-reader-lib-add qiaomu-reader-lib-refresh");
+    const refreshText = qiaomuReaderTranslate("refresh-library");
+    this._setAttrs(refresh, { role: "button", tabindex: "0" });
+    refresh.setAttribute("aria-label", refreshText);
+    svgIcon(refresh, "refresh");
+    refresh.createSpan({ cls: "qiaomu-reader-lib-add-label", text: refreshText });
+    this._activateOnClick(refresh, () => this._refresh());
     const add = actions.createDiv("qiaomu-reader-lib-add");
     const addText = qiaomuReaderTranslate("add-a-book");
     this._setAttrs(add, { role: "button", tabindex: "0" });
@@ -11661,13 +11683,64 @@ const LibraryModal = class extends Modal {
     const prefix = folder ? `${folder}/` : "";
     return this.app.vault.getFiles().filter((f) => BOOK_EXTENSIONS.has(f.extension) && (prefix === "" || f.path.startsWith(prefix)));
   }
+  _libTimes() {
+    return (file, key) => {
+      if (key === "updated") return file.stat?.mtime || 0;
+      if (key === "created") return file.stat?.ctime || 0;
+      return this.plugin.getProgress(file.path)?.lastRead || 0;
+    };
+  }
   _sortLibBooks(bookFiles) {
-    const lastRead = (p) => this.plugin.getProgress(p)?.lastRead ?? 0;
-    bookFiles.sort((a, b) => {
-      const pa = lastRead(a.path), pb = lastRead(b.path);
-      if (pb !== pa) return pb - pa;
-      return a.basename.localeCompare(b.basename, "ru");
-    });
+    const mode = this._libArrange ? "custom" : (this.plugin.settings.libSort || "opened");
+    const order = this._libArrange ? this._libArrange.order : this.plugin.settings.libBookOrder;
+    const sorted = sortLibraryBooks(bookFiles, mode, order, this._libTimes());
+    bookFiles.splice(0, bookFiles.length, ...sorted);
+  }
+  _openLibSortMenu(event) {
+    const menu = new Menu();
+    const current = this._libArrange ? "custom" : (this.plugin.settings.libSort || "opened");
+    const choose = async (mode) => {
+      if (mode === "custom") { this._beginCustomOrder(); return; }
+      this._libArrange = null;
+      this.plugin.settings.libSort = mode;
+      await this.plugin._saveLocalData();
+      this._drawChipRow?.();
+      this._redrawLib?.();
+    };
+    for (const [mode, key] of [
+      ["opened", "sort-by-opened"],
+      ["updated", "sort-by-updated"],
+      ["created", "sort-by-created"],
+      ["custom", "sort-custom"],
+    ]) {
+      menu.addItem((item) => item.setTitle(qiaomuReaderTranslate(key)).setChecked(current === mode).onClick(() => choose(mode)));
+    }
+    menu.showAtMouseEvent(event);
+  }
+  _beginCustomOrder() {
+    const mode = this.plugin.settings.libSort || "opened";
+    const order = Array.isArray(this.plugin.settings.libBookOrder) ? this.plugin.settings.libBookOrder : [];
+    const seeded = sortLibraryBooks(this._libFiles || [], mode, order, this._libTimes());
+    this._libArrange = { order: seeded.map((file) => file.path) };
+    this._drawChipRow?.();
+    this._redrawLib?.();
+  }
+  _moveArrangedBook(fromPath, toPath) {
+    if (!this._libArrange || !fromPath || fromPath === toPath) return;
+    this._libArrange.order = applyVisibleMove(this._libArrange.order, this._libVisiblePaths || [], fromPath, toPath);
+    this._redrawLib?.();
+  }
+  async _confirmCustomOrder() {
+    if (!this._libArrange) return;
+    const known = new Set((this._libFiles || []).map((file) => file.path));
+    const order = this._libArrange.order.filter((path) => known.has(path));
+    for (const file of this._libFiles || []) if (!order.includes(file.path)) order.push(file.path);
+    this.plugin.settings.libSort = "custom";
+    this.plugin.settings.libBookOrder = order;
+    this._libArrange = null;
+    await this.plugin._saveLocalData();
+    this._drawChipRow?.();
+    this._redrawLib?.();
   }
   _buildLibEmpty(contentEl, folder) {
     const box = contentEl.createDiv("qiaomu-reader-lib-empty");
@@ -11950,9 +12023,11 @@ const LibraryModal = class extends Modal {
     const notesButton = actions.createEl("button", { cls: "qiaomu-reader-lib-study-button", text: qiaomuReaderTranslate(hasNote ? "library-open-note" : "library-create-note") });
     notesButton.addEventListener("click", ev => { ev.stopPropagation(); this.close(); void openOrCreateBookNoteBeside(this.plugin, file); });
     const openBook = () => {
+      if (this._libArrange) return;
       this.close();
       void this.plugin.openFile(file);
     };
+    if (this._libArrange) this._bindLibCardDrag(card, file.path);
     const bookMenu = this._libCardMenu(file); card.addEventListener("contextmenu", bookMenu);
     const menuBtn = cover.createEl("button", { cls: "qiaomu-reader-lib-morebtn", attr: { type: "button" } });
     menuBtn.setAttribute("aria-label", qiaomuReaderTranslate("book-actions"));
@@ -11960,7 +12035,34 @@ const LibraryModal = class extends Modal {
     menuBtn.addEventListener("click", bookMenu);
     card.addEventListener("click", ev => { if (!ev.target.closest("button")) openBook(); });
     card.addEventListener("keydown", ev => {
+      if (this._libArrange) return;
       if (ev.target === card && (ev.key === "Enter" || ev.key === " ")) { ev.preventDefault(); openBook(); }
+    });
+  }
+  _bindLibCardDrag(card, path) {
+    card.draggable = true;
+    card.addEventListener("dragstart", (event) => {
+      if (event.target.closest("button")) { event.preventDefault(); return; }
+      event.dataTransfer.setData("text/plain", path);
+      event.dataTransfer.effectAllowed = "move";
+      card.addClass("qiaomu-reader-lib-card-dragging");
+      this._libDraggingPath = path;
+    });
+    card.addEventListener("dragend", () => {
+      card.removeClass("qiaomu-reader-lib-card-dragging");
+      this._libDraggingPath = "";
+    });
+    card.addEventListener("dragover", (event) => {
+      if (!this._libDraggingPath || this._libDraggingPath === path) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      card.addClass("qiaomu-reader-lib-card-drop");
+    });
+    card.addEventListener("dragleave", () => card.removeClass("qiaomu-reader-lib-card-drop"));
+    card.addEventListener("drop", (event) => {
+      event.preventDefault();
+      card.removeClass("qiaomu-reader-lib-card-drop");
+      this._moveArrangedBook(event.dataTransfer.getData("text/plain") || this._libDraggingPath, path);
     });
   }
   async loadThumb(bookFile, coverEl, placeholder) {
