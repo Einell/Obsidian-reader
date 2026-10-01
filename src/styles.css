@@ -30,7 +30,7 @@
 /* ── PDF pages, lazy figures, zoom lightbox ──────────────────────────────── */
 .qiaomu-reader-content .qiaomu-reader-pdf-page-img { max-width:100%; width:auto; height:auto; object-fit:contain; margin:6px auto; border-radius:10px; border:1px solid var(--qiaomu-reader-border,#ddd9ce); }
 .qiaomu-reader-pdf-page-img, .qiaomu-reader-content img, .qiaomu-reader-flow img { cursor:zoom-in; }
-img.qiaomu-reader-pdf-lazy:not([data-loaded="1"]) { background:color-mix(in srgb,var(--qiaomu-reader-text,#808080) 7%,transparent); cursor:default; }
+.qiaomu-reader-pdf-lazy:not([data-loaded="1"]) { background:color-mix(in srgb,var(--qiaomu-reader-text,#808080) 7%,transparent); cursor:default; }
 .qiaomu-reader-pdf-text-layer.qiaomu-reader-pdf-text-placeholder { display:none; }
 .qiaomu-reader-pdf-page-surface.qiaomu-reader-pdf-rendering::after { content:""; position:absolute; inset:0; z-index:3; pointer-events:none; background:linear-gradient(100deg,rgba(255,255,255,0) 30%,rgba(255,255,255,.72) 48%,rgba(255,255,255,0) 66%),color-mix(in srgb,var(--qiaomu-reader-text,#808080) 9%,#fff); background-size:220% 100%; animation:qiaomu-reader-pdf-page-loading 1.05s ease-in-out infinite; }
 @keyframes qiaomu-reader-pdf-page-loading { from { background-position:100% 0; } to { background-position:-100% 0; } }

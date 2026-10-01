@@ -66,9 +66,10 @@ test("Traditional Chinese PDF CMaps are embedded for offline extraction", async 
 });
 
 test("PDF pages keep their fixed layout and expose text capabilities per page", () => {
-  assert.equal(pdfPageKind(120, false), "text");
-  assert.equal(pdfPageKind(0, false), "scan");
-  assert.equal(pdfPageKind(120, true), "scan");
+  assert.equal(pdfPageKind(120), "text");
+  assert.equal(pdfPageKind(8), "text");
+  assert.equal(pdfPageKind(7), "scan");
+  assert.equal(pdfPageKind(0), "scan");
   assert.match(READER_BLOCK_SELECTOR, /\.qiaomu-reader-pdf-text-layer/);
 
   const textPage = pdfPageShell({

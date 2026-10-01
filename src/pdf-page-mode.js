@@ -1,8 +1,8 @@
 export const READER_BLOCK_SELECTOR = "p,h1,h2,h3,h4,.qiaomu-reader-pdf-text-layer";
 export const PDF_AI_CONTEXT_MAX_CHARS = 180_000;
 
-export function pdfPageKind(textLength, textLooksUnreadable = false) {
-  return textLength > 0 && !textLooksUnreadable ? "text" : "scan";
+export function pdfPageKind(textLength) {
+  return textLength >= 8 ? "text" : "scan";
 }
 
 export function pdfPageTextForAi(items) {

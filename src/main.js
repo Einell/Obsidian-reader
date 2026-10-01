@@ -3032,12 +3032,12 @@ const PdfPaginator = class {
     // the surface itself yields a circular 34px shrink-to-fit box, so size
     // everything from the declared column instead.
     const figMaxH = Math.max(40, geo.innerHeight - 4);
-    const lazyImgs = this.flow.querySelectorAll("img.qiaomu-reader-pdf-lazy");
+    const lazyImgs = this.flow.querySelectorAll(".qiaomu-reader-pdf-lazy");
     for (const img of lazyImgs) {
-      const natW = parseFloat(img.getAttribute("width")) || 0;
-      const natH = parseFloat(img.getAttribute("height")) || 0;
-      if (!natW || !natH) continue;
       const frame = img.parentElement;
+      const natW = parseFloat(frame?.dataset.pdfWidth) || parseFloat(img.dataset.layoutWidth) || parseFloat(img.getAttribute("width")) || 0;
+      const natH = parseFloat(frame?.dataset.pdfHeight) || parseFloat(img.dataset.layoutHeight) || parseFloat(img.getAttribute("height")) || 0;
+      if (!natW || !natH) continue;
       const maxW = Math.max(40, geo.colWidth - geo.sidePad * 2);
       const fit = Math.min(1, maxW / natW, figMaxH / natH);
       const w = Math.round(natW * fit);
@@ -3056,7 +3056,7 @@ const PdfPaginator = class {
         }
       }
       const textLayer = frame?.querySelector(".qiaomu-reader-pdf-text-layer");
-      if (textLayer) textLayer.style.setProperty("--total-scale-factor", String(fit));
+      if (textLayer) textLayer.style.setProperty("--total-scale-factor", String(w / natW));
     }
   }
   _finishScrollLayout(anchorSpread, box) {
@@ -4136,6 +4136,14 @@ function applyPdfZoom(view, value, point = null, mode = "custom") {
   if (view?.bookHtml && pager) {
     (view.updateUI || view._updateUI)?.call(view, pager.spread, pager.total);
   }
+  flow?.querySelectorAll(".qiaomu-reader-pdf-lazy").forEach((surface) => {
+    if (surface.getAttribute("data-loaded") === "1" && surface.tagName === "CANVAS") {
+      surface.width = 0;
+      surface.height = 0;
+      surface.setAttribute("data-loaded", "0");
+    }
+  });
+  void renderVisibleFigures(view);
 }
 function changePdfZoom(view, direction) {
   applyPdfZoom(view, stepPdfZoom(view?.pdfZoom, direction));
@@ -7089,7 +7097,7 @@ async function pdfTextLayerElement(page, textContent, ownerDocument = document) 
     console.warn(`Qiaomu Reader: PDF text layer unavailable on page ${page.pageNumber}`, error);
     return null;
   }
-  return container.textContent.trim() ? container : null;
+  return container.childNodes.length ? container : null;
 }
 
 function pdfPageCharCount(items) {
@@ -7100,17 +7108,9 @@ function pdfPageCharCount(items) {
   return count;
 }
 
-function pdfPageSize(page) {
-  const view = page.view || [0, 0, 612, 792];
-  return {
-    width: Math.max(1, Math.round(Math.abs(view[2] - view[0]))),
-    height: Math.max(1, Math.round(Math.abs(view[3] - view[1]))),
-  };
-}
-
 // Loads a single page: progress is reported at page 1, every 4th page and on
-// the final one, aborts are re-checked around each await, and unreadable text
-// runs suppress the HTML text layer.
+// the final one, and aborts are re-checked around each await. A page with
+// extractable text keeps that text; only a nearly empty text run is a scan.
 async function readPdfPage(doc, pageNumber, signal, onProgress, total) {
   throwIfReaderLoadAborted(signal);
   if (onProgress && (pageNumber === 1 || pageNumber % 4 === 0 || pageNumber === total)) {
@@ -7122,10 +7122,13 @@ async function readPdfPage(doc, pageNumber, signal, onProgress, total) {
     const textContent = await getPdfTextContent(page);
     throwIfReaderLoadAborted(signal);
     const textLen = pdfPageCharCount(textContent.items);
-    const size = pdfPageSize(page);
-    const brokenText = textLen >= 40 && pdfTextLooksUnreadable(textContent.items);
-    const textFallback = brokenText ? "" : pdfPageTextFallback(textContent.items);
-    const kind = pdfPageKind(textLen, brokenText || !textFallback);
+    const viewport = page.getViewport({ scale: 1 });
+    const size = {
+      width: Math.max(1, Math.round(viewport.width)),
+      height: Math.max(1, Math.round(viewport.height)),
+    };
+    const kind = pdfPageKind(textLen);
+    const textFallback = kind === "text" ? pdfPageTextFallback(textContent.items) : "";
     return {
       width: size.width,
       height: size.height,
@@ -7190,33 +7193,49 @@ function createPdfLazyView(doc, loadingTask, pageText) {
         deadline.clear();
       }
     },
-    // The complete source page is always the visual truth. Text, when reliable,
+    // The complete source page is always the visual truth. Text, when present,
     // is a transparent interaction layer and never replaces these pixels.
-    async render(pageNumber, ownerDocument = document) {
+    async render(pageNumber, ownerDocument = document, display = null) {
       const page = await doc.getPage(pageNumber);
       try {
         if (this._destroyed) throw Object.assign(new Error("Reader closed"), { name: "AbortError" });
         const unit = page.getViewport({ scale: 1 });
-        const fit = Math.max(1, Math.min(2, 1600 / Math.max(unit.width, unit.height, 1)));
+        const visualWidth = Math.max(1, display?.width || unit.width);
+        const visualHeight = Math.max(1, display?.height || unit.height);
+        const cssWidth = Math.max(1, display?.cssWidth || visualWidth);
+        const cssHeight = Math.max(1, display?.cssHeight || visualHeight);
+        const pixelRatio = Math.max((window.devicePixelRatio || 1) * 2, 2);
+        const visualLong = Math.max(visualWidth, visualHeight, 1);
+        const ratio = Math.min(pixelRatio, 8192 / visualLong);
+        const steps = ratio > 1 ? [ratio, Math.max(1, ratio - 1)] : [ratio];
         const textContent = this._pageText[pageNumber - 1] ? await getPdfTextContent(page) : null;
         const textLayer = textContent ? await pdfTextLayerElement(page, textContent, ownerDocument) : null;
-        for (const [scale, budget] of [[fit, 15000], [fit / 2, 8000]]) {
+        for (let stepIndex = 0; stepIndex < steps.length; stepIndex++) {
+          const step = steps[stepIndex];
+          const budget = stepIndex ? 8000 : 15000;
+          const scale = Math.min(8192, visualLong * step) / Math.max(unit.width, unit.height, 1);
           const viewport = page.getViewport({ scale });
+          const bitmapWidth = Math.ceil(viewport.width);
+          const bitmapHeight = Math.ceil(viewport.height);
           const canvas = ownerDocument.createElement("canvas");
-          canvas.width = Math.ceil(viewport.width);
-          canvas.height = Math.ceil(viewport.height);
-          const context = canvas.getContext("2d");
+          canvas.width = bitmapWidth;
+          canvas.height = bitmapHeight;
+          canvas.style.width = `${Math.round(cssWidth)}px`;
+          canvas.style.height = `${Math.round(cssHeight)}px`;
+          canvas.style.maxWidth = "none";
+          canvas.style.maxHeight = "none";
+          const context = canvas.getContext("2d", { alpha: false });
+          if (!context) throw new Error("qiaomu-reader-render-too-heavy");
           context.fillStyle = "#ffffff";
-          context.fillRect(0, 0, canvas.width, canvas.height);
+          context.fillRect(0, 0, bitmapWidth, bitmapHeight);
           try {
             await this._paint(page.render({ canvasContext: context, viewport }), budget);
             if (this._destroyed) throw Object.assign(new Error("Reader closed"), { name: "AbortError" });
-            return { src: canvas.toDataURL("image/jpeg", 0.82), textLayer };
-          } catch (e) {
-            if (String(e && e.message) !== "qiaomu-reader-render-budget") throw e;
-          } finally {
+            return { canvas, textLayer };
+          } catch (error) {
             canvas.width = 0;
             canvas.height = 0;
+            if (String(error && error.message) !== "qiaomu-reader-render-budget") throw error;
           }
         }
         throw new Error("qiaomu-reader-render-too-heavy");
@@ -7601,13 +7620,6 @@ function sendQuoteToBookNote(view, hl) {
   const [full] = enrichHighlights(view, [hl]);
   exportHighlightsToBookNote(view.app, view.plugin, view.file, [full]);
 }
-function pdfTextLooksUnreadable(items) {
-  const text = (items || []).map((it) => typeof it.str === "string" ? it.str : "").join(" ");
-  const tokens = text.split(/\s+/).filter(Boolean);
-  if (tokens.length < 30) return false;
-  const singles = tokens.filter((t) => t.length === 1).length;
-  return singles / tokens.length > 0.7;
-}
 function readerSearchTexts(flow) {
   return flow ? [...flow.querySelectorAll(READER_BLOCK_SELECTOR)].map((el) => el.textContent || "") : [];
 }
@@ -7792,7 +7804,7 @@ function tocFromBoldParagraphs(blocks) {
   if (unique.length > Math.max(1, blocks.length / TOC_NOISE_BLOCKS_PER_PAGE)) return [];
   return unique.length >= TOC_MIN_RELIABLE ? unique : [];
 }
-const FIGURE_LAZY_SELECTOR = "img.qiaomu-reader-pdf-lazy";
+const FIGURE_LAZY_SELECTOR = ".qiaomu-reader-pdf-lazy";
 const FIGURE_SURFACE_SELECTOR = ".qiaomu-reader-pdf-page-surface";
 const FIGURE_RENDERING_CLASS = "qiaomu-reader-pdf-rendering";
 const FIGURE_ERROR_CLASS = "qiaomu-reader-pdf-render-error";
@@ -7838,13 +7850,39 @@ async function drawFigure(img, lazy, current = () => true) {
   const surface = img.closest(FIGURE_SURFACE_SELECTOR);
   if (surface) surface.addClass(FIGURE_RENDERING_CLASS);
   try {
-    const rendered = await lazy.render(figurePageNumber(img), img.ownerDocument);
-    if (!current()) return;
-    img.src = rendered.src;
+    const cssWidth = img.clientWidth || parseFloat(img.style.width) || parseFloat(surface?.dataset.pdfWidth) || 0;
+    const cssHeight = img.clientHeight || parseFloat(img.style.height) || parseFloat(surface?.dataset.pdfHeight) || 0;
+    const rect = img.getBoundingClientRect();
+    const rendered = await lazy.render(figurePageNumber(img), img.ownerDocument, {
+      width: rect.width || cssWidth,
+      height: rect.height || cssHeight,
+      cssWidth,
+      cssHeight,
+    });
+    if (!current()) {
+      if (rendered?.canvas) {
+        rendered.canvas.width = 0;
+        rendered.canvas.height = 0;
+      }
+      return;
+    }
+    if (rendered.canvas) {
+      const canvas = rendered.canvas;
+      canvas.className = img.className;
+      canvas.dataset.pdfPage = img.dataset.pdfPage || "";
+      canvas.dataset.layoutWidth = surface?.dataset.pdfWidth || img.dataset.layoutWidth || "";
+      canvas.dataset.layoutHeight = surface?.dataset.pdfHeight || img.dataset.layoutHeight || "";
+      if (img.style.width) canvas.style.width = img.style.width;
+      if (img.style.height) canvas.style.height = img.style.height;
+      canvas.setAttribute(FIGURE_LOADED_ATTR, "1");
+      img.replaceWith(canvas);
+    } else if (rendered.src) {
+      img.src = rendered.src;
+      if (typeof img.decode === "function") await img.decode().catch(() => {});
+      img.setAttribute(FIGURE_LOADED_ATTR, "1");
+    }
     const oldLayer = surface?.querySelector(".qiaomu-reader-pdf-text-layer");
     if (oldLayer && rendered.textLayer) oldLayer.replaceWith(rendered.textLayer);
-    if (typeof img.decode === "function") await img.decode().catch(() => {});
-    img.setAttribute(FIGURE_LOADED_ATTR, "1");
   } catch (e) {
     if (current()) markFigureUnavailable(img, surface, e);
   } finally {
@@ -7868,7 +7906,12 @@ async function sweepReaderFigures(reader, lazy) {
     if (gap <= FIGURE_LOAD_SPAN && loadState !== "1" && loadState !== "skip") {
       await drawFigure(img, lazy, current);
     } else if (gap > FIGURE_DROP_SPAN && loadState === "1") {
-      if (img.hasAttribute("src")) img.removeAttribute("src");
+      if (img.tagName === "CANVAS") {
+        img.width = 0;
+        img.height = 0;
+      } else if (img.hasAttribute("src")) {
+        img.removeAttribute("src");
+      }
       const surface = img.closest(FIGURE_SURFACE_SELECTOR);
       const layer = surface?.querySelector(".qiaomu-reader-pdf-text-layer");
       if (layer) {
